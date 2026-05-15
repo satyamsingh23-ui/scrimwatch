@@ -5,3 +5,4 @@ dist/
 .env 
 logs/ 
 data/ 
+"config.json" 

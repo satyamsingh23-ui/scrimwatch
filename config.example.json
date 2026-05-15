@@ -1,0 +1,19 @@
+{
+  "DISCORD_BOT_TOKEN": "",
+  "TWILIO_ACCOUNT_SID": "",
+  "TWILIO_AUTH_TOKEN": "",
+  "TWILIO_WHATSAPP_FROM": "",
+  "ALERT_WHATSAPP_TO": "",
+  "WA_MAX_RETRIES": "3",
+  "WA_RETRY_DELAY": "5",
+  "WA_RATE_LIMIT_PER_MIN": "10",
+  "IDP_CACHE_SIZE": "100",
+  "IDP_RATE_LIMIT_SECONDS": "30",
+  "API_HOST": "0.0.0.0",
+  "API_PORT": "8000",
+  "ANTHROPIC_API_KEY": "",
+  "GEMINI_API_KEY": "",
+  "GROQ_API_KEY": "",
+  "VITE_API_URL": "http://localhost:8000/api",
+  "MONITORED_GUILD_IDS": ""
+}
