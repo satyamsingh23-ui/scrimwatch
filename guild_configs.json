@@ -1,0 +1,11 @@
+{
+  "1287000812601610242": {
+    "guild_id": 1287000812601610242,
+    "monitoring_enabled": true,
+    "enabled_channels": [
+      1387673255355220048,
+      1389847339987894272
+    ],
+    "alert_role_id": null
+  }
+}

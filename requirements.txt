@@ -1,0 +1,19 @@
+# FastAPI and web server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-dotenv==1.0.0
+
+# Discord bot
+discord.py==2.3.2
+
+# Twilio for WhatsApp (optional)
+twilio==8.11.0
+
+# Database (uncomment if you're using one)
+# peewee==3.17.0
+# psycopg2-binary==2.9.9  # For PostgreSQL
+# pymongo==4.6.1  # For MongoDB
+
+# Utilities
+python-dateutil==2.8.2
+requests==2.31.0
