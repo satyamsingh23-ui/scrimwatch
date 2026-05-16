@@ -1,5 +1,4 @@
 [phases.setup]
-[phases.setup]
 nixPkgs = ["python311", "nodejs_20"]
 
 [phases.install]
