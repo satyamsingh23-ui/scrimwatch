@@ -1,34 +1,26 @@
-// src/utils/api.js - Updated for production deployment
-
+// src/utils/api.js
 import axios from 'axios'
 
-// API Base URL - automatically uses Railway URL in production
-const API_BASE_URL = import.meta.env.VITE_API_URL || 
-                     (import.meta.env.DEV ? '' : 'https://your-railway-app.up.railway.app')
+const API_BASE_URL = import.meta.env.VITE_API_URL ||
+                     (import.meta.env.DEV ? '' : '')
 
-// Create axios instance
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 15000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  headers: { 'Content-Type': 'application/json' },
 })
 
-// API functions
-export const getStatus = () => api.get('/status')
-export const getStats = () => api.get('/stats')
-export const getIdpHistory = (hours = 24) => api.get(`/idphistory?hours=${hours}`)
-export const getSlots = (guildId) => api.get(`/slots?guild_id=${guildId}`)
-export const clearSlots = (guildId) => api.post('/slots/clear', { guild_id: guildId })
-export const getChannels = (guildId) => api.get(`/channels?guild_id=${guildId}`)
-export const getLogs = (lines = 150) => api.get(`/logs?lines=${lines}`)
+export const getStatus      = () => api.get('/status')
+export const getIdpHistory  = (hours = 24) => api.get(`/idphistory?hours=${hours}`)
+export const getSlots       = (guildId) => api.get(`/slots/${guildId}`)
+export const clearSlots     = (guildId) => api.post(`/slots/${guildId}/clear`)
+export const getChannels    = (guildId) => api.get(`/channels/${guildId}`)
+export const getLogs        = (lines = 150) => api.get(`/logs?lines=${lines}`)
 
-// Start/Stop monitoring
-export const startMonitoring = () => api.post('/start')
-export const stopMonitoring = () => api.post('/stop')
-
-// Test alert
-export const testAlert = (message) => api.post('/test-alert', { message })
+// Stats endpoints
+export const getLeaderboard   = (guildId, days = 7)   => api.get(`/stats/${guildId}/leaderboard?days=${days}`)
+export const getRecentStats   = (guildId, days = 7)   => api.get(`/stats/${guildId}/recent?limit=100`)
+export const getStatsSummary  = (guildId)              => api.get(`/stats/${guildId}/summary`)
+export const getPlayerHistory = (guildId, player, days = 30) => api.get(`/stats/${guildId}/leaderboard?days=${days}`)
 
 export default api
