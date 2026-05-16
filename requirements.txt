@@ -16,4 +16,6 @@ twilio==8.11.0
 
 # Utilities
 python-dateutil==2.8.2
-requests==2.31.0httpx 
+requests==2.31.0
+httpx
+aiohttp
