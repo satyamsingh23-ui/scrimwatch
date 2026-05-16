@@ -19,3 +19,5 @@ python-dateutil==2.8.2
 requests==2.31.0
 httpx
 aiohttp
+
+opencv-python-headless
