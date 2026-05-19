@@ -144,7 +144,7 @@ async def ai_scout(body: ScoutRequest):
                 headers={"content-type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": body.prompt}]}],
-                    "generationConfig": {"maxOutputTokens": 2048},
+                    "generationConfig": {"maxOutputTokens": 4096},
                 },
             )
     except httpx.TimeoutException:
