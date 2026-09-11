@@ -22,7 +22,11 @@ app = FastAPI(title="ScrimWatch", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://scrimwatch-eight.vercel.app",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
