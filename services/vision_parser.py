@@ -112,7 +112,8 @@ async def parse_screenshot_vision(
             }
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0.0
+        "temperature": 0.0,
+        "reasoning_effort": "none"
     }
 
     await _limiter.acquire()
