@@ -13,7 +13,7 @@ log = get_logger("vision_parser")
 
 # Groq Configuration
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL_NAME = "qwen/qwen3.6-27b"
+MODEL_NAME = "qwen/qwen3.8-27b"
 # Rate Limiter for Groq (More generous than Gemini)
 class _RateLimiter:
     def __init__(self, rpm: int = 20):
