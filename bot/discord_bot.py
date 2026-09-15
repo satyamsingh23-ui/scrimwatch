@@ -769,6 +769,22 @@ async def _handle_stats_screenshot(
         log.error(f"Stats: parse failed | file={attachment.filename} | error={exc}")
         records = []
 
+    if records and records[0].get("screenshot_type") == "victory_lobby":
+        await _safe_remove_reaction("🔍")
+        try:
+            await message.add_reaction("ℹ️")
+        except discord.HTTPException:
+            pass
+        log.info(
+            "Stats: victory lobby screen detected, no detailed stats available — "
+            "please upload the stats/scoreboard screen instead"
+        )
+        await message.channel.send(
+            "ℹ️ Victory lobby screen detected, but detailed player stats are not "
+            "available on this screen. Please upload the stats/scoreboard screen instead."
+        )
+        return
+
     if not records:
         await _safe_remove_reaction("🔍")
         try:

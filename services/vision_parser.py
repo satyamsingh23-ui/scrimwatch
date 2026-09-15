@@ -38,6 +38,11 @@ The column HEADER TEXT tells you what each column contains — always read the h
 LAYOUT B — "squad_result" player cards:
 Each player has a card showing their stats.
 
+LAYOUT C — "victory_lobby" screen:
+This is the "Winner Winner Chicken Dinner" or placement celebration screen shown right after a match ends, before the detailed stats table appears.
+It shows: large placement number (e.g. "#1") and total teams (e.g. "/21") at top-left, a row of player cards each with a slot number, clan tag + IGN, and sometimes an MVP badge — but per-player numeric stats (kills, damage, survived, etc.) are usually partially obscured by gift/thank-you icons and NOT reliably extractable from this screen.
+If you detect this layout, set "screen_type" to "victory_lobby", extract placement, total_teams, map_name (if visible), and each player's name and is_mvp status. Set kills, assists, damage, survived, health_restored, rescue, recall, and rating to null for every player rather than guessing partially-obscured numbers.
+
 Extraction Rules:
 1. ALWAYS read column headers first to identify which column is which.
 2. Map: Look for map name text anywhere on screen (e.g. "Rondo", "Erangel", "Miramar"). If not visible, use "Unknown".
@@ -58,7 +63,7 @@ CRITICAL: Extract ALL players visible. Never skip a row.
 
 Return ONLY valid JSON, no markdown:
 {
-  "screen_type": "squad_result" or "detail_stats",
+  "screen_type": "squad_result", "detail_stats", or "victory_lobby",
   "placement": int,
   "total_teams": int,
   "map_name": "Erangel" or "Miramar" or "Sanhok" or "Vikendi" or "Livik" or "Nusa" or "Rondo" or "Unknown",
@@ -195,23 +200,33 @@ def _build_records(parsed: dict, image_hash: str, guild_id: int) -> list[dict]:
             "player_name":     name,
             "name":            name,
             "slot":            idx,
-            "kills":           p.get("kills") or p.get("finishes") or 0,
-            "assists":         p.get("assists") or 0,
+            "kills":           None if screen_type == "victory_lobby" else (p.get("kills") or p.get("finishes") or 0),
+            "assists":         None if screen_type == "victory_lobby" else (p.get("assists") or 0),
             "is_mvp":          bool(p.get("is_mvp")),
             "placement":       placement,
             "total_teams":     total,
             "map_name":        map_name,
             "game_mode":       mode,
-            "damage":          p.get("damage"),
-            "survived":        survived_raw,
-            "health_restored": p.get("health_restored"),
-            "rescue":          p.get("rescue") or 0,
-            "recall":          p.get("recall") or 0,
-            "rating":          rating_raw,
+            "damage":          None if screen_type == "victory_lobby" else p.get("damage"),
+            "survived":        None if screen_type == "victory_lobby" else survived_raw,
+            "health_restored": None if screen_type == "victory_lobby" else p.get("health_restored"),
+            "rescue":          None if screen_type == "victory_lobby" else (p.get("rescue") or 0),
+            "recall":          None if screen_type == "victory_lobby" else (p.get("recall") or 0),
+            "rating":          None if screen_type == "victory_lobby" else rating_raw,
             "confidence":      0.99,
             "screenshot_type": screen_type,
             "image_hash":      image_hash,
             "guild_id":        guild_id,
             "detected_at":     now,
         })
+    if not records and screen_type == "victory_lobby":
+        return [{
+            "screenshot_type": screen_type,
+            "placement": placement,
+            "total_teams": total,
+            "map_name": map_name,
+            "game_mode": mode,
+            "image_hash": image_hash,
+            "guild_id": guild_id,
+        }]
     return records
