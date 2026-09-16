@@ -1,5 +1,6 @@
 import { Card } from '../components/UI.jsx'
 import { timeAgo } from '../utils/format.js'
+import { useEffect, useState } from 'react'
 
 function Row({ label, value, color }) {
   return (
@@ -12,6 +13,48 @@ function Row({ label, value, color }) {
 
 export default function SettingsPage({ status }) {
   const s = status || {}
+  const [visionModels, setVisionModels] = useState([])
+  const [visionModel, setVisionModel] = useState('')
+  const [visionStatus, setVisionStatus] = useState('')
+  const [visionSaving, setVisionSaving] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    fetch('/api/settings/vision-model')
+      .then(res => {
+        if (!res.ok) throw new Error(`Request failed (${res.status})`)
+        return res.json()
+      })
+      .then(data => {
+        if (!active) return
+        setVisionModels(data.candidates || [])
+        setVisionModel(data.model || '')
+      })
+      .catch(err => {
+        if (active) setVisionStatus(`Error loading models: ${err.message}`)
+      })
+    return () => { active = false }
+  }, [])
+
+  async function saveVisionModel() {
+    setVisionSaving(true)
+    setVisionStatus('')
+    try {
+      const res = await fetch('/api/settings/vision-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: visionModel }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`)
+      setVisionModel(data.model)
+      setVisionStatus('Saved successfully')
+    } catch (err) {
+      setVisionStatus(`Error: ${err.message}`)
+    } finally {
+      setVisionSaving(false)
+    }
+  }
 
   return (
     <div className="space-y-5 animate-fade-in max-w-2xl">
@@ -33,6 +76,34 @@ export default function SettingsPage({ status }) {
         <Row label="Duplicates Skipped" value={s.duplicateSkipped    ?? 0} />
         <Row label="WA Queue Depth"     value={s.waQueueDepth        ?? 0} color={s.waQueueDepth > 5 ? 'text-red-400' : 'text-green-400'} />
         <Row label="Last Detection"     value={timeAgo(s.lastDetectedAt)} color="text-amber-400" />
+      </Card>
+
+      <Card className="p-5">
+        <p className="text-[10px] text-cyan-400 uppercase tracking-widest mb-4">Vision Model</p>
+        <div className="flex items-center gap-3">
+          <select
+            value={visionModel}
+            onChange={e => setVisionModel(e.target.value)}
+            disabled={!visionModels.length || visionSaving}
+            className="flex-1 rounded-lg bg-[#07080f] border border-[#1e2235] px-3 py-2 text-sm text-[#c8cde8] font-mono outline-none"
+          >
+            {!visionModels.length && <option value="">Loading models...</option>}
+            {visionModels.map(model => <option key={model} value={model}>{model}</option>)}
+          </select>
+          <button
+            type="button"
+            onClick={saveVisionModel}
+            disabled={!visionModel || visionSaving}
+            className="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-[#07080f] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {visionSaving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+        {visionStatus && (
+          <p className={`mt-2 text-xs font-mono ${visionStatus.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>
+            {visionStatus}
+          </p>
+        )}
       </Card>
 
       <Card className="p-5">

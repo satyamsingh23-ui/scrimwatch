@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from db.database import db
 from bot.guild_state import guild_manager
+from services.vision_parser import MODEL_CANDIDATES, MODEL_NAME
 from state import state
 
 app = FastAPI(title="ScrimWatch", version="2.1.0")
@@ -121,6 +122,28 @@ async def get_stats_summary(guild_id: int):
 
 class ScoutRequest(BaseModel):
     prompt: str
+
+
+class VisionModelRequest(BaseModel):
+    model: str
+
+
+@app.get("/api/settings/vision-model")
+async def get_vision_model():
+    configured_model = db.get_setting("vision_model", default="")
+    return {
+        "model": configured_model or MODEL_NAME,
+        "candidates": MODEL_CANDIDATES,
+    }
+
+
+@app.post("/api/settings/vision-model")
+async def set_vision_model(body: VisionModelRequest):
+    model = body.model.strip()
+    if not model:
+        raise HTTPException(400, "model must be a non-empty string")
+    db.set_setting("vision_model", model)
+    return {"model": model}
 
 
 @app.post("/ai/scout")

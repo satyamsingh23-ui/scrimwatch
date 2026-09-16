@@ -8,12 +8,19 @@ import random
 import aiohttp
 from datetime import datetime
 from utils.logger import get_logger
+from db.database import db
 
 log = get_logger("vision_parser")
 
 # Groq Configuration
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL_NAME = "qwen/qwen3.8-27b"
+MODEL_CANDIDATES = [
+    "qwen/qwen3.8-27b",
+    "qwen/qwen3.6-27b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+]
 # Rate Limiter for Groq (More generous than Gemini)
 class _RateLimiter:
     def __init__(self, rpm: int = 20):
@@ -102,8 +109,11 @@ async def parse_screenshot_vision(
         "Content-Type": "application/json"
     }
 
+    configured_model = db.get_setting("vision_model", default="")
+    selected_model = configured_model.strip() if configured_model else MODEL_NAME
+
     payload = {
-        "model": MODEL_NAME,
+        "model": selected_model,
         "messages": [
             {
                 "role": "user",
