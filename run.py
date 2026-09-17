@@ -14,16 +14,15 @@ import asyncio
 import os
 import signal
 import sys
-from pathlib import Path
 
 from dotenv import load_dotenv
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-os.chdir(PROJECT_ROOT)
-load_dotenv(dotenv_path=PROJECT_ROOT / ".env")  # loads .env into os.environ
+import config
 
 import uvicorn
-import config
+
+PROJECT_ROOT = config.get_runtime_root()
+os.chdir(config.get_user_data_root())
+load_dotenv(dotenv_path=PROJECT_ROOT / ".env", override=False)
 
 # Import the FastAPI app object directly.
 # DO NOT pass "api.dashboard:app" as a string to uvicorn — on Windows

@@ -34,10 +34,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-LOG_PATH = Path("logs/app.log")
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOG_PATH = PROJECT_ROOT / "logs/app.log"
-DIST     = PROJECT_ROOT / "frontend" / "dist"
+PROJECT_ROOT = config.get_runtime_root()
+LOG_PATH = config.get_user_data_path("logs", "app.log")
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+DIST = PROJECT_ROOT / "frontend" / "dist"
 
 SETUP_PAGE = """<!doctype html>
 <html lang="en">

@@ -7,6 +7,7 @@ No hard-coded secrets. Sensitive keys are validated at startup.
 
 import os
 import json
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,6 +20,27 @@ def get_user_config_path() -> Path:
     app_data = os.getenv("APPDATA")
     base = Path(app_data) if app_data else Path.home()
     return base / "ScrimWatch" / "config.json"
+
+
+def get_runtime_root() -> Path:
+    """Return the source root or PyInstaller's extracted bundle root."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+def get_user_data_path(*parts: str) -> Path:
+    """Return a writable path for runtime data outside a packaged bundle."""
+    return get_user_data_root().joinpath("data", *parts)
+
+
+def get_user_data_root() -> Path:
+    """Return the writable per-user ScrimWatch data root."""
+    app_data = os.getenv("APPDATA")
+    base = Path(app_data) if app_data else Path.home()
+    path = base / "ScrimWatch"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _load_user_config() -> dict:
@@ -99,4 +121,4 @@ API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
 API_PORT: int = int(os.getenv("API_PORT", "8000"))
 
 # ── Database ──────────────────────────────────────────────────────────────
-DB_PATH: str = os.getenv("DB_PATH", "data/scrimbot.db")
+DB_PATH: str = os.getenv("DB_PATH", str(get_user_data_path("scrimbot.db")))
