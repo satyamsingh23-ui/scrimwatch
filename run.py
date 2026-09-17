@@ -23,6 +23,7 @@ os.chdir(PROJECT_ROOT)
 load_dotenv(dotenv_path=PROJECT_ROOT / ".env")  # loads .env into os.environ
 
 import uvicorn
+import config
 
 # Import the FastAPI app object directly.
 # DO NOT pass "api.dashboard:app" as a string to uvicorn — on Windows
@@ -32,7 +33,6 @@ from api.dashboard import app as dashboard_app
 from db.database import db
 from bot.discord_bot import run_bot
 from utils.logger import get_logger
-import config
 
 log = get_logger("run")
 
@@ -57,14 +57,19 @@ async def _main() -> None:
     # 1. Connect database FIRST — both bot and dashboard depend on it
     db.connect()
     log.info("Database connected.")
-    log.info("Starting Discord bot ...")
+    if config.SETUP_REQUIRED:
+        log.warning("Required credentials missing — starting dashboard in setup mode.")
 
     try:
-        # 2. Independent tasks — crash in dashboard does NOT cancel the bot
-        bot_task       = asyncio.create_task(run_bot(),        name="discord_bot")
+        # 2. Keep the dashboard available during first-run setup.
+        tasks_to_wait = []
+        if not config.SETUP_REQUIRED:
+            tasks_to_wait.append(asyncio.create_task(run_bot(), name="discord_bot"))
+            log.info("Starting Discord bot ...")
         dashboard_task = asyncio.create_task(_run_dashboard(), name="dashboard")
+        tasks_to_wait.append(dashboard_task)
 
-        await asyncio.gather(bot_task, dashboard_task, return_exceptions=True)
+        await asyncio.gather(*tasks_to_wait, return_exceptions=True)
 
     except asyncio.CancelledError:
         log.info("Shutdown signal received.")

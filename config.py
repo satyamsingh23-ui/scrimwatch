@@ -6,6 +6,7 @@ No hard-coded secrets. Sensitive keys are validated at startup.
 """
 
 import os
+import json
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,8 +14,42 @@ from dotenv import load_dotenv
 # Load .env from project root (one level up from this file if inside a package)
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
 
+def get_user_config_path() -> Path:
+    """Return the writable per-user ScrimWatch configuration path."""
+    app_data = os.getenv("APPDATA")
+    base = Path(app_data) if app_data else Path.home()
+    return base / "ScrimWatch" / "config.json"
+
+
+def _load_user_config() -> dict:
+    path = get_user_config_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Unable to read user config at {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"User config at {path} must contain a JSON object")
+    return data
+
+
+_USER_CONFIG = _load_user_config()
+
+
+def _secret(name: str) -> str:
+    environment_value = os.getenv(name, "").strip()
+    if environment_value:
+        return environment_value
+    user_value = _USER_CONFIG.get(name, "")
+    return user_value.strip() if isinstance(user_value, str) else ""
+
+
 # ── Discord ───────────────────────────────────────────────────────────────
-DISCORD_TOKEN: str = os.getenv("DISCORD_BOT_TOKEN", "")
+DISCORD_TOKEN: str = _secret("DISCORD_BOT_TOKEN")
+GROQ_API_KEY: str = _secret("GROQ_API_KEY")
+SETUP_REQUIRED: bool = not (DISCORD_TOKEN and GROQ_API_KEY)
 
 # Guild IDs to monitor — empty list means ALL guilds
 MONITORED_GUILD_IDS: list[int] = [
@@ -34,8 +69,8 @@ SCRIM_KEYWORDS: list[str] = [
 ]
 
 # ── WhatsApp / Twilio ─────────────────────────────────────────────────────
-TWILIO_ACCOUNT_SID: str   = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN: str    = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_ACCOUNT_SID: str   = _secret("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN: str    = _secret("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM: str = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 
 # Parse recipient numbers — always prefix with "whatsapp:"

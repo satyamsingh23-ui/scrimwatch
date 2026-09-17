@@ -4,13 +4,14 @@ Existing endpoints UNCHANGED. Stats endpoints added at bottom.
 """
 
 import os
+import json
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -18,6 +19,7 @@ from db.database import db
 from bot.guild_state import guild_manager
 from services.vision_parser import MODEL_CANDIDATES, MODEL_NAME
 from state import state
+import config
 
 app = FastAPI(title="ScrimWatch", version="2.1.0")
 
@@ -37,12 +39,71 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOG_PATH = PROJECT_ROOT / "logs/app.log"
 DIST     = PROJECT_ROOT / "frontend" / "dist"
 
+SETUP_PAGE = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ScrimWatch Setup</title>
+<style>
+body{margin:0;background:#07080f;color:#c8cde8;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}
+main{width:min(440px,calc(100% - 40px));background:#111320;border:1px solid #1e2235;border-radius:14px;padding:28px}
+h1{font-size:22px;color:#00e5ff;margin:0 0 10px}p{color:#8b91ae;line-height:1.5}
+label{display:block;color:#c8cde8;font-size:13px;margin:18px 0 6px}input{box-sizing:border-box;width:100%;padding:11px;border-radius:8px;border:1px solid #1e2235;background:#07080f;color:#fff}
+a{color:#00e5ff}button{margin-top:22px;width:100%;padding:11px;border:0;border-radius:8px;background:#00e5ff;color:#07080f;font-weight:700;cursor:pointer}
+#message{margin-top:14px;color:#7bed9f}
+</style></head>
+<body><main>
+<h1>Welcome to ScrimWatch</h1>
+<p>Enter your bot token and API key to get started.</p>
+<p>Get a Discord bot token at <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">discord.com/developers/applications</a>.<br>
+Get a free Groq API key at <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys</a>.</p>
+<form id="setup"><label for="token">Discord Bot Token</label><input id="token" name="token" type="password" required>
+<label for="key">Groq API Key</label><input id="key" name="key" type="password" required><button>Save</button></form>
+<div id="message"></div>
+<script>document.getElementById('setup').addEventListener('submit',async e=>{e.preventDefault();const m=document.getElementById('message');m.textContent='Saving...';const r=await fetch('/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({discord_bot_token:document.getElementById('token').value,groq_api_key:document.getElementById('key').value})});m.innerHTML=await r.text()})</script>
+</main></body></html>"""
+
 
 # ── EXISTING endpoints (UNCHANGED) ────────────────────────────────────
 
 @app.get("/status")
 async def get_status():
     return JSONResponse(content=state.to_dict())
+
+
+class SetupRequest(BaseModel):
+    discord_bot_token: str
+    groq_api_key: str
+
+
+@app.get("/")
+async def root():
+    if config.SETUP_REQUIRED:
+        return HTMLResponse(SETUP_PAGE)
+    if DIST.exists():
+        return FileResponse(DIST / "index.html")
+    return {
+        "message": "Run: cd frontend && npm install && npm run build",
+        "api_status": "ok",
+        "bot_running": state.running,
+    }
+
+
+@app.post("/setup")
+async def save_setup(body: SetupRequest):
+    token = body.discord_bot_token.strip()
+    groq_key = body.groq_api_key.strip()
+    if not token or not groq_key:
+        raise HTTPException(400, "Both Discord bot token and Groq API key are required")
+    path = config.get_user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"DISCORD_BOT_TOKEN": token, "GROQ_API_KEY": groq_key},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return HTMLResponse("<!doctype html><html><body><h1>Saved!</h1><p>Please restart ScrimWatch to continue</p></body></html>")
 
 
 @app.get("/slots/{guild_id}")

@@ -9,6 +9,7 @@ import aiohttp
 from datetime import datetime
 from utils.logger import get_logger
 from db.database import db
+import config
 
 log = get_logger("vision_parser")
 
@@ -97,7 +98,7 @@ async def parse_screenshot_vision(
     api_key: str = "",
 ) -> list[dict]:
     # Use key from argument or environment
-    key = api_key or os.environ.get("GROQ_API_KEY", "")
+    key = api_key or config.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")
     if not key:
         raise RuntimeError("GROQ_API_KEY not set")
 
