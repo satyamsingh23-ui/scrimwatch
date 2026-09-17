@@ -1,6 +1,7 @@
 import { Card } from '../components/UI.jsx'
 import { timeAgo } from '../utils/format.js'
 import { useEffect, useState } from 'react'
+import api from '../utils/api.js'
 
 function Row({ label, value, color }) {
   return (
@@ -20,18 +21,14 @@ export default function SettingsPage({ status }) {
 
   useEffect(() => {
     let active = true
-    fetch('/api/settings/vision-model')
-      .then(res => {
-        if (!res.ok) throw new Error(`Request failed (${res.status})`)
-        return res.json()
-      })
+    api.get('/api/settings/vision-model')
       .then(data => {
         if (!active) return
-        setVisionModels(data.candidates || [])
-        setVisionModel(data.model || '')
+        setVisionModels(data.data.candidates || [])
+        setVisionModel(data.data.model || '')
       })
       .catch(err => {
-        if (active) setVisionStatus(`Error loading models: ${err.message}`)
+        if (active) setVisionStatus(`Error loading models: ${err.response?.data?.detail || err.message}`)
       })
     return () => { active = false }
   }, [])
@@ -40,17 +37,11 @@ export default function SettingsPage({ status }) {
     setVisionSaving(true)
     setVisionStatus('')
     try {
-      const res = await fetch('/api/settings/vision-model', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: visionModel }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`)
-      setVisionModel(data.model)
+      const response = await api.post('/api/settings/vision-model', { model: visionModel })
+      setVisionModel(response.data.model)
       setVisionStatus('Saved successfully')
     } catch (err) {
-      setVisionStatus(`Error: ${err.message}`)
+      setVisionStatus(`Error: ${err.response?.data?.detail || err.message}`)
     } finally {
       setVisionSaving(false)
     }
