@@ -21,7 +21,7 @@ export default function SettingsPage({ status }) {
 
   useEffect(() => {
     let active = true
-    api.get('/api/settings/vision-model')
+    api.get('/settings/vision-model')
       .then(data => {
         if (!active) return
         setVisionModels(data.data.candidates || [])
@@ -37,7 +37,7 @@ export default function SettingsPage({ status }) {
     setVisionSaving(true)
     setVisionStatus('')
     try {
-      const response = await api.post('/api/settings/vision-model', { model: visionModel })
+      const response = await api.post('/settings/vision-model', { model: visionModel })
       setVisionModel(response.data.model)
       setVisionStatus('Saved successfully')
     } catch (err) {

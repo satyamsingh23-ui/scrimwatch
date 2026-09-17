@@ -128,7 +128,7 @@ class VisionModelRequest(BaseModel):
     model: str
 
 
-@app.get("/api/settings/vision-model")
+@app.get("/settings/vision-model")
 async def get_vision_model():
     configured_model = db.get_setting("vision_model", default="")
     return {
@@ -137,7 +137,7 @@ async def get_vision_model():
     }
 
 
-@app.post("/api/settings/vision-model")
+@app.post("/settings/vision-model")
 async def set_vision_model(body: VisionModelRequest):
     model = body.model.strip()
     if not model:
