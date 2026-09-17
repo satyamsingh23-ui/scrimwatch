@@ -33,7 +33,9 @@ app.add_middleware(
 )
 
 LOG_PATH = Path("logs/app.log")
-DIST     = Path("frontend/dist")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOG_PATH = PROJECT_ROOT / "logs/app.log"
+DIST     = PROJECT_ROOT / "frontend" / "dist"
 
 
 # ── EXISTING endpoints (UNCHANGED) ────────────────────────────────────
@@ -199,11 +201,14 @@ async def ai_scout(body: ScoutRequest):
 # ── Serve React (MUST be last) ─────────────────────────────────────────
 
 if DIST.exists():
-    app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
-
     @app.get("/{full_path:path}")
     async def serve_react(full_path: str):
+        requested = (DIST / full_path).resolve()
+        if DIST in requested.parents and requested.is_file():
+            return FileResponse(requested)
         return FileResponse(DIST / "index.html")
+
+    app.mount("/", StaticFiles(directory=DIST, html=True), name="frontend")
 else:
     @app.get("/")
     async def no_build():

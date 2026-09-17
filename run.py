@@ -10,12 +10,17 @@ Fixes vs previous version:
     kill the bot or close the database underneath it
 """
 
-from dotenv import load_dotenv
-load_dotenv()  # loads .env into os.environ
-
 import asyncio
+import os
 import signal
 import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+os.chdir(PROJECT_ROOT)
+load_dotenv(dotenv_path=PROJECT_ROOT / ".env")  # loads .env into os.environ
 
 import uvicorn
 
