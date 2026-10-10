@@ -49,6 +49,7 @@ class GuildState:
         self.idp_channels:   set[int] = set()
         self.reg_channels:   set[int] = set()
         self.stats_channels: set[int] = set()
+        self.roster_channels: set[int] = set()
         self.seen_idps: deque[str] = deque(maxlen=config.IDP_CACHE_SIZE)
 
     def load_from_db(self) -> None:
@@ -58,6 +59,7 @@ class GuildState:
         self.idp_channels  = db.load_channels(self.guild_id, "idp")
         self.reg_channels  = db.load_channels(self.guild_id, "registration")
         self.stats_channels = db.load_stats_channels(self.guild_id)
+        self.roster_channels = db.load_roster_channels(self.guild_id)
         log.debug(
             f"Guild {self.guild_id} loaded: "
             f"{len(self.slots)} slots, "
@@ -131,6 +133,17 @@ class GuildState:
 
     def is_reg_channel(self, channel_id: int) -> bool:
         return channel_id in self.reg_channels
+
+    def add_roster_channel(self, channel_id: int) -> None:
+        db.save_roster_channel(self.guild_id, channel_id)
+        self.roster_channels.add(channel_id)
+
+    def remove_roster_channel(self, channel_id: int) -> None:
+        db.remove_roster_channel(self.guild_id, channel_id)
+        self.roster_channels.discard(channel_id)
+
+    def is_roster_channel(self, channel_id: int) -> bool:
+        return channel_id in self.roster_channels
 
     # ── Stats channel helpers ─────────────────────────────────────────────
 

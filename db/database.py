@@ -100,6 +100,12 @@ CREATE TABLE IF NOT EXISTS stats_channels (
     PRIMARY KEY (guild_id, channel_id)
 );
 
+CREATE TABLE IF NOT EXISTS roster_channels (
+    guild_id    INTEGER NOT NULL,
+    channel_id  INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, channel_id)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -286,6 +292,27 @@ class Database:
             (guild_id, channel_type),
         ).fetchall()
         return {r["channel_id"] for r in rows}
+
+    def save_roster_channel(self, guild_id: int, channel_id: int) -> None:
+        self._db.execute(
+            "INSERT OR IGNORE INTO roster_channels (guild_id, channel_id) VALUES (?, ?)",
+            (guild_id, channel_id),
+        )
+        self._db.commit()
+
+    def remove_roster_channel(self, guild_id: int, channel_id: int) -> None:
+        self._db.execute(
+            "DELETE FROM roster_channels WHERE guild_id=? AND channel_id=?",
+            (guild_id, channel_id),
+        )
+        self._db.commit()
+
+    def load_roster_channels(self, guild_id: int) -> set[int]:
+        rows = self._db.execute(
+            "SELECT channel_id FROM roster_channels WHERE guild_id=?",
+            (guild_id,),
+        ).fetchall()
+        return {row["channel_id"] for row in rows}
 
     # ── IDP History ───────────────────────────────────────────────────────
 

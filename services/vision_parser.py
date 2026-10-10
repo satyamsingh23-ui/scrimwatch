@@ -35,6 +35,22 @@ class _RateLimiter:
         self._last = time.monotonic()
 
 _limiter = _RateLimiter(rpm=25)
+_PROFILE_PROMPT = """You are a BGMI player profile screenshot extractor.
+Analyze the BGMI profile card/screen. The UID is a number near the top, explicitly
+labeled "UID:". The player's in-game name (IGN) is displayed prominently next to
+a small avatar icon and may begin with a clan tag prefix.
+
+Extract ONLY these two fields:
+- UID: the exact UID digits as a string. Do not include the "UID:" label or other text.
+- IGN: the exact displayed in-game name, preserving its capitalization, symbols,
+  spacing, and clan tag prefix. Do not normalize, translate, or omit any prefix.
+
+Do not return the player's level, other profile details, explanations, or guesses.
+If either value is not legible, return an empty string for that field.
+
+Return only valid JSON with exactly these keys:
+{"UID": "digits as a string", "IGN": "exact displayed name"}"""
+
 _PROMPT = """You are a BGMI Match Stats Extractor.
 Analyze the image carefully. BGMI has TWO different post-match stat screen layouts:
 
@@ -173,6 +189,75 @@ async def parse_screenshot_vision(
     except Exception as e:
         log.error(f"Failed to parse Groq JSON: {e}")
         return []
+
+
+async def parse_profile_screenshot_vision(
+    raw_bytes: bytes,
+    api_key: str = "",
+) -> dict[str, str]:
+    """Extract the UID and exact IGN from a BGMI player profile screenshot."""
+    key = api_key or os.environ.get("GROQ_API_KEY", "")
+    if not key:
+        raise RuntimeError("GROQ_API_KEY not set")
+
+    base64_image = base64.b64encode(raw_bytes).decode("utf-8")
+    if raw_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        image_mime_type = "image/png"
+    elif raw_bytes.startswith(b"RIFF") and raw_bytes[8:12] == b"WEBP":
+        image_mime_type = "image/webp"
+    else:
+        image_mime_type = "image/jpeg"
+
+    configured_model = db.get_setting("vision_model", default="")
+    selected_model = configured_model.strip() if configured_model else MODEL_NAME
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": selected_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _PROFILE_PROMPT},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{image_mime_type};base64,{base64_image}"
+                        },
+                    },
+                ],
+            }
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.0,
+        "reasoning_effort": "none",
+    }
+
+    await _limiter.acquire()
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            GROQ_URL,
+            headers=headers,
+            json=payload,
+            timeout=45,
+        ) as response:
+            if response.status != 200:
+                error = await response.text()
+                raise RuntimeError(
+                    f"Groq profile extraction failed ({response.status}): {error}"
+                )
+            response_data = await response.json()
+
+    content = response_data["choices"][0]["message"]["content"]
+    parsed = json.loads(content)
+    uid = str(parsed.get("UID", parsed.get("uid")) or "").strip()
+    ign = str(parsed.get("IGN", parsed.get("ign")) or "").strip()
+    if uid and not uid.isdigit():
+        raise ValueError("Groq returned a non-numeric UID for the profile screenshot")
+    return {"UID": uid, "IGN": ign}
+
 
 def _build_records(parsed: dict, image_hash: str, guild_id: int) -> list[dict]:
     now = datetime.utcnow().isoformat()

@@ -376,11 +376,33 @@ async def cmd_unset_reg_channel(ctx: commands.Context) -> None:
     await ctx.send(f"✅ `#{ctx.channel.name}` removed from registration tracking.")
 
 
+@bot.command(name="setrosterchannel")
+@commands.has_permissions(administrator=True)
+@commands.guild_only()
+async def cmd_set_roster_channel(ctx: commands.Context) -> None:
+    """Designate this channel for player profile screenshot registration."""
+    gs = guild_manager.get(ctx.guild.id)
+    gs.add_roster_channel(ctx.channel.id)
+    await ctx.send(
+        f"✅ `#{ctx.channel.name}` is now a **roster registration channel**."
+    )
+
+
+@bot.command(name="unsetrosterchannel")
+@commands.has_permissions(administrator=True)
+@commands.guild_only()
+async def cmd_unset_roster_channel(ctx: commands.Context) -> None:
+    """Remove this channel from roster registration."""
+    gs = guild_manager.get(ctx.guild.id)
+    gs.remove_roster_channel(ctx.channel.id)
+    await ctx.send(f"✅ `#{ctx.channel.name}` removed from roster registration.")
+
+
 @bot.command(name="showchannels")
 @commands.has_permissions(administrator=True)
 @commands.guild_only()
 async def cmd_show_channels(ctx: commands.Context) -> None:
-    """Show configured IDP and registration channels for this server."""
+    """Show configured IDP, registration, and roster channels for this server."""
     gs = guild_manager.get(ctx.guild.id)
 
     def fmt_channels(ch_ids: set[int]) -> str:
@@ -399,6 +421,11 @@ async def cmd_show_channels(ctx: commands.Context) -> None:
     embed.add_field(
         name="📋 Registration Channels",
         value=fmt_channels(gs.reg_channels),
+        inline=False,
+    )
+    embed.add_field(
+        name="👤 Roster Registration Channels",
+        value=fmt_channels(gs.roster_channels),
         inline=False,
     )
     await ctx.send(embed=embed)
@@ -511,6 +538,8 @@ async def cmd_help(ctx: commands.Context) -> None:
         "`!unsetidchannel`  — Remove this channel from IDP detection\n"
         "`!setregchannel`   — Set this channel for slot registration\n"
         "`!unsetregchannel` — Remove this channel from registration\n"
+        "`!setrosterchannel`   — Set this channel for profile screenshot registration\n"
+        "`!unsetrosterchannel` — Remove this channel from roster registration\n"
         "`!showchannels`    — Show configured channels\n"
         "`!clearslots`      — Clear all slots for this server\n"
         "`!status`          — Bot runtime status\n"
