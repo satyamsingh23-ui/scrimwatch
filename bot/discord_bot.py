@@ -31,6 +31,7 @@ from services import whatsapp
 from state import state
 from utils.logger import get_logger
 from utils.image_preprocessing import preprocess, hash_image
+from utils.roster import extract_team_tag
 from services.ocr_service import ocr_service
 from services.vision_parser import (
     parse_profile_screenshot_vision,
@@ -247,10 +248,84 @@ async def on_message(message: discord.Message) -> None:
 
 
 class RosterApprovalView(discord.ui.View):
-    def __init__(self, guild_id: int, discord_user_id: int):
+    def __init__(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+        role: str = "starter",
+    ):
         super().__init__(timeout=24 * 60 * 60)
         self.guild_id = guild_id
         self.discord_user_id = discord_user_id
+        self.select_role.options = [
+            discord.SelectOption(
+                label="Starter",
+                value="starter",
+                default=role == "starter",
+            ),
+            discord.SelectOption(
+                label="Substitute",
+                value="substitute",
+                default=role == "substitute",
+            ),
+        ]
+
+    async def _refresh_pending_card(
+        self,
+        interaction: discord.Interaction,
+        profile: dict,
+    ) -> None:
+        embed = _build_roster_pending_embed(profile)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.select(
+        placeholder="Select roster role",
+        options=[
+            discord.SelectOption(label="Starter", value="starter"),
+            discord.SelectOption(label="Substitute", value="substitute"),
+        ],
+        row=1,
+    )
+    async def select_role(
+        self,
+        interaction: discord.Interaction,
+        select: discord.ui.Select,
+    ) -> None:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if (
+            interaction.guild_id != self.guild_id
+            or not permissions
+            or not permissions.administrator
+        ):
+            await interaction.response.send_message(
+                "Only server administrators can change the roster role.",
+                ephemeral=True,
+            )
+            return
+        profile = db.update_pending_roster_role(
+            self.guild_id,
+            self.discord_user_id,
+            select.values[0],
+        )
+        if not profile:
+            await interaction.response.send_message(
+                "This roster submission is no longer pending review.",
+                ephemeral=True,
+            )
+            return
+        self.select_role.options = [
+            discord.SelectOption(
+                label="Starter",
+                value="starter",
+                default=profile["role"] == "starter",
+            ),
+            discord.SelectOption(
+                label="Substitute",
+                value="substitute",
+                default=profile["role"] == "substitute",
+            ),
+        ]
+        await self._refresh_pending_card(interaction, profile)
 
     async def _review(
         self,
@@ -339,6 +414,44 @@ class RosterApprovalView(discord.ui.View):
             RosterEditModal(profile, self, interaction.message)
         )
 
+    @discord.ui.button(
+        label="Set Team",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
+    async def set_team(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if (
+            interaction.guild_id != self.guild_id
+            or not permissions
+            or not permissions.administrator
+        ):
+            await interaction.response.send_message(
+                "Only server administrators can override the team tag.",
+                ephemeral=True,
+            )
+            return
+        profile = db.get_roster_profile(self.guild_id, self.discord_user_id)
+        if not profile or profile["status"] != "pending":
+            await interaction.response.send_message(
+                "This roster submission is no longer pending review.",
+                ephemeral=True,
+            )
+            return
+        if interaction.message is None:
+            await interaction.response.send_message(
+                "The roster review message is no longer available.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(
+            RosterTeamTagModal(profile, self, interaction.message)
+        )
+
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
     async def approve(
         self,
@@ -416,6 +529,7 @@ class RosterEditModal(discord.ui.Modal, title="Edit Roster Submission"):
             self._view.discord_user_id,
             uid,
             ign,
+            extract_team_tag(ign),
         )
         if not profile:
             await interaction.response.send_message(
@@ -445,6 +559,66 @@ class RosterEditModal(discord.ui.Modal, title="Edit Roster Submission"):
         )
 
 
+class RosterTeamTagModal(discord.ui.Modal, title="Set Roster Team"):
+    team_tag_input = discord.ui.TextInput(
+        label="Team tag",
+        placeholder="Team name/tag",
+        max_length=50,
+        required=True,
+    )
+
+    def __init__(
+        self,
+        profile: dict,
+        view: RosterApprovalView,
+        message: discord.Message,
+    ):
+        super().__init__()
+        self.team_tag_input.default = profile.get("team_tag") or ""
+        self._view = view
+        self._message = message
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if (
+            interaction.guild_id != self._view.guild_id
+            or not permissions
+            or not permissions.administrator
+        ):
+            await interaction.response.send_message(
+                "Only server administrators can override the team tag.",
+                ephemeral=True,
+            )
+            return
+        team_tag = self.team_tag_input.value.strip().upper()
+        if not team_tag:
+            await interaction.response.send_message(
+                "Team tag cannot be empty.",
+                ephemeral=True,
+            )
+            return
+        profile = db.update_pending_roster_team_tag(
+            self._view.guild_id,
+            self._view.discord_user_id,
+            team_tag,
+        )
+        if not profile:
+            await interaction.response.send_message(
+                "This roster submission is no longer pending review.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        await self._message.edit(
+            embed=_build_roster_pending_embed(profile),
+            view=self._view,
+        )
+        await interaction.followup.send(
+            "Roster team tag updated and remains pending approval.",
+            ephemeral=True,
+        )
+
+
 def _build_roster_pending_embed(profile: dict) -> discord.Embed:
     embed = discord.Embed(
         title="Roster registration pending approval",
@@ -458,6 +632,12 @@ def _build_roster_pending_embed(profile: dict) -> discord.Embed:
     )
     embed.add_field(name="UID", value=f"`{profile['uid']}`", inline=True)
     embed.add_field(name="IGN", value=profile["ign"], inline=True)
+    embed.add_field(
+        name="Team",
+        value=profile.get("team_tag") or "Not detected",
+        inline=True,
+    )
+    embed.add_field(name="Role", value=profile.get("role", "starter").title(), inline=True)
     if profile.get("manually_edited"):
         embed.set_footer(text="Manually edited • Submission status: pending")
     else:
@@ -506,6 +686,7 @@ async def _handle_roster_screenshot(
             discord_display_name=display_name,
             uid=uid,
             ign=ign,
+            team_tag=extract_team_tag(ign),
         )
     except Exception as exc:
         log.error(
@@ -520,7 +701,11 @@ async def _handle_roster_screenshot(
     embed = _build_roster_pending_embed(submission)
     await message.channel.send(
         embed=embed,
-        view=RosterApprovalView(message.guild.id, discord_user_id),
+        view=RosterApprovalView(
+            message.guild.id,
+            discord_user_id,
+            submission["role"],
+        ),
     )
 
 

@@ -4,9 +4,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
+from api import dashboard
 from bot import discord_bot
-from bot.discord_bot import RosterApprovalView, RosterEditModal
+from bot.discord_bot import (
+    RosterApprovalView,
+    RosterEditModal,
+    RosterTeamTagModal,
+)
 from db.database import Database
+from utils.roster import extract_team_tag
 
 
 class _Attachment:
@@ -130,6 +138,140 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.edited["view"], view)
         self.assertIn("9876543210", message.edited["embed"].fields[1].value)
         self.assertEqual(interaction.followup.sent[0][0], "Roster submission updated and remains pending approval.")
+
+    async def test_team_tag_detection_examples(self):
+        examples = (
+            ("HLsSATYAM", "HLS"),
+            ("HLS_Name", "HLS"),
+            ("[HLS] Name", "HLS"),
+        )
+        for user_id, (ign, expected_tag) in enumerate(examples, start=100):
+            self.assertEqual(extract_team_tag(ign), expected_tag)
+            profile = self.database.submit_roster_profile(
+                guild_id=self.guild_id,
+                discord_user_id=user_id,
+                discord_display_name=f"Player {user_id}",
+                uid=str(user_id),
+                ign=ign,
+            )
+            self.assertEqual(profile["team_tag"], expected_tag)
+
+        edited = self.database.edit_pending_roster_profile(
+            self.guild_id,
+            100,
+            "100",
+            "[NEW] Name",
+        )
+        self.assertEqual(edited["team_tag"], "NEW")
+
+    async def test_admin_can_override_team_tag(self):
+        profile = self._create_pending_profile()
+        view = RosterApprovalView(self.guild_id, self.user_id)
+        message = _ReviewMessage()
+        modal = RosterTeamTagModal(profile, view, message)
+        modal.team_tag_input._value = "  FIXED TEAM  "
+        interaction = self._create_edit_interaction(999, is_admin=True)
+
+        with patch.object(discord_bot, "db", self.database):
+            await modal.on_submit(interaction)
+
+        updated = self.database.get_roster_profile(self.guild_id, self.user_id)
+        self.assertEqual(updated["team_tag"], "FIXED TEAM")
+        self.assertEqual(updated["manually_edited"], 1)
+        self.assertEqual(updated["status"], "pending")
+        self.assertIs(message.edited["view"], view)
+
+    async def test_admin_can_change_pending_role(self):
+        self._create_pending_profile()
+        view = RosterApprovalView(self.guild_id, self.user_id)
+        view.select_role._values = ["substitute"]
+        interaction = self._create_edit_interaction(999, is_admin=True)
+        with patch.object(discord_bot, "db", self.database):
+            await view.select_role.callback(
+                interaction,
+            )
+        updated = self.database.get_roster_profile(self.guild_id, self.user_id)
+        self.assertEqual(updated["role"], "substitute")
+        self.assertEqual(updated["status"], "pending")
+        self.assertIsNotNone(interaction.response.edited)
+
+    async def test_roster_endpoint_groups_approved_players_with_starters_first(self):
+        starter = self.database.submit_roster_profile(
+            guild_id=self.guild_id,
+            discord_user_id=1,
+            discord_display_name="Starter",
+            uid="111111",
+            ign="HLS_One",
+            role="starter",
+        )
+        substitute = self.database.submit_roster_profile(
+            guild_id=self.guild_id,
+            discord_user_id=2,
+            discord_display_name="Sub",
+            uid="222222",
+            ign="[HLS] Two",
+            role="substitute",
+        )
+        self.database.review_roster_profile(
+            self.guild_id, starter["discord_user_id"], "approved"
+        )
+        self.database.review_roster_profile(
+            self.guild_id, substitute["discord_user_id"], "approved"
+        )
+        self.database.submit_roster_profile(
+            guild_id=self.guild_id,
+            discord_user_id=1,
+            discord_display_name="Starter",
+            uid="999999",
+            ign="[OTHER] New IGN",
+        )
+        self.database.review_roster_profile(
+            self.guild_id, 1, "rejected"
+        )
+        pending = self.database.submit_roster_profile(
+            guild_id=self.guild_id,
+            discord_user_id=3,
+            discord_display_name="Pending",
+            uid="333333",
+            ign="HLS_Three",
+        )
+        self.assertEqual(pending["status"], "pending")
+
+        with patch.object(dashboard, "db", self.database):
+            transport = httpx.ASGITransport(app=dashboard.app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.get(
+                    "/roster",
+                    params={"guild_id": self.guild_id},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "teams": [
+                    {
+                        "team_tag": "HLS",
+                        "players": [
+                            {
+                                "ign": "HLS_One",
+                                "uid": "111111",
+                                "discord_name": "Starter",
+                                "role": "starter",
+                            },
+                            {
+                                "ign": "[HLS] Two",
+                                "uid": "222222",
+                                "discord_name": "Sub",
+                                "role": "substitute",
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
 
     async def test_submitter_can_edit_own_pending_profile(self):
         profile = self._create_pending_profile()

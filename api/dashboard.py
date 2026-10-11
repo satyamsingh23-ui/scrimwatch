@@ -67,6 +67,28 @@ async def get_channels(guild_id: int):
     }
 
 
+@app.get("/roster")
+async def get_roster(guild_id: int):
+    profiles = db.get_approved_roster_profiles(guild_id)
+    teams: dict[str, list[dict]] = {}
+    for profile in profiles:
+        team_tag = (profile["team_tag"] or "Unassigned").strip().upper()
+        teams.setdefault(team_tag, []).append(
+            {
+                "ign": profile["ign"],
+                "uid": profile["uid"],
+                "discord_name": profile["discord_name"],
+                "role": profile["role"],
+            }
+        )
+    return {
+        "teams": [
+            {"team_tag": team_tag, "players": players}
+            for team_tag, players in teams.items()
+        ]
+    }
+
+
 @app.get("/idphistory")
 async def get_idp_history(hours: int = 24):
     if not 1 <= hours <= 168:

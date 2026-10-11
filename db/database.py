@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from utils.logger import get_logger
+from utils.roster import extract_team_tag
 
 log = get_logger("database")
 
@@ -362,6 +363,12 @@ class Database:
         role: str = "starter",
     ) -> dict:
         """Create or replace a pending submission without changing approved data."""
+        if role not in {"starter", "substitute"}:
+            raise ValueError(f"Unsupported roster role: {role}")
+        if team_tag is None:
+            team_tag = extract_team_tag(ign)
+        else:
+            team_tag = team_tag.strip().upper() or None
         self._db.execute(
             """
             INSERT INTO roster_profiles (
@@ -428,20 +435,87 @@ class Database:
         discord_user_id: int,
         uid: str,
         ign: str,
+        team_tag: str | None = None,
     ) -> dict | None:
         """Update only the pending submission; approved values remain untouched."""
+        if team_tag is None:
+            team_tag = extract_team_tag(ign)
+        else:
+            team_tag = team_tag.strip().upper() or None
         cursor = self._db.execute(
             """
             UPDATE roster_profiles
-            SET uid=?, ign=?, manually_edited=1, updated_at=datetime('now')
+            SET uid=?, ign=?, team_tag=?, manually_edited=1,
+                updated_at=datetime('now')
             WHERE guild_id=? AND discord_user_id=? AND status='pending'
             """,
-            (uid, ign, guild_id, discord_user_id),
+            (uid, ign, team_tag, guild_id, discord_user_id),
         )
         self._db.commit()
         if not cursor.rowcount:
             return None
         return self.get_roster_profile(guild_id, discord_user_id)
+
+    def update_pending_roster_team_tag(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+        team_tag: str,
+    ) -> dict | None:
+        team_tag = team_tag.strip().upper()
+        if not team_tag:
+            raise ValueError("Team tag cannot be empty")
+        cursor = self._db.execute(
+            """
+            UPDATE roster_profiles
+            SET team_tag=?, manually_edited=1, updated_at=datetime('now')
+            WHERE guild_id=? AND discord_user_id=? AND status='pending'
+            """,
+            (team_tag, guild_id, discord_user_id),
+        )
+        self._db.commit()
+        if not cursor.rowcount:
+            return None
+        return self.get_roster_profile(guild_id, discord_user_id)
+
+    def update_pending_roster_role(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+        role: str,
+    ) -> dict | None:
+        if role not in {"starter", "substitute"}:
+            raise ValueError(f"Unsupported roster role: {role}")
+        cursor = self._db.execute(
+            """
+            UPDATE roster_profiles
+            SET role=?, manually_edited=1, updated_at=datetime('now')
+            WHERE guild_id=? AND discord_user_id=? AND status='pending'
+            """,
+            (role, guild_id, discord_user_id),
+        )
+        self._db.commit()
+        if not cursor.rowcount:
+            return None
+        return self.get_roster_profile(guild_id, discord_user_id)
+
+    def get_approved_roster_profiles(self, guild_id: int) -> list[dict]:
+        rows = self._db.execute(
+            """
+            SELECT discord_display_name AS discord_name,
+                   approved_uid AS uid,
+                   approved_ign AS ign,
+                   approved_team_tag AS team_tag,
+                   approved_role AS role
+            FROM roster_profiles
+            WHERE guild_id=? AND approved_uid IS NOT NULL
+            ORDER BY upper(coalesce(approved_team_tag, '')),
+                     CASE approved_role WHEN 'starter' THEN 0 ELSE 1 END,
+                     upper(approved_ign)
+            """,
+            (guild_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def review_roster_profile(
         self,
