@@ -1,5 +1,5 @@
 import React, { Suspense } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { useCallback } from 'react'
 
 import Sidebar            from './components/Sidebar.jsx'
@@ -15,6 +15,7 @@ import LogsPage      from './pages/LogsPage.jsx'
 import SettingsPage  from './pages/SettingsPage.jsx'
 import StatsPage            from './pages/StatsPage.jsx'
 import TeamPerformancePage  from './pages/TeamPerformancePage.jsx'
+import RosterPage           from './pages/RosterPage.jsx'
 
 import { usePolling } from './hooks/usePolling.js'
 import { useToast }   from './hooks/useToast.js'
@@ -51,14 +52,19 @@ function P({ children }) {
 }
 
 function Layout() {
+  const { pathname } = useLocation()
+  const rosterRoute = pathname === '/roster'
   const { toasts, toast, dismiss } = useToast()
   const fetchStatus = useCallback(() => getStatus(), [])
   const { data: status, loading, error, refresh } = usePolling(fetchStatus, 4000)
 
   return (
     <div style={{ display: 'flex', height: '100vh', background: '#07080f', overflow: 'hidden' }}>
-      <Sidebar status={status} />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '208px', overflow: 'hidden' }}>
+      <Sidebar status={status} mobileHidden={rosterRoute} />
+      <div
+        className={rosterRoute ? 'ml-0 sm:ml-[208px]' : ''}
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: rosterRoute ? undefined : '208px', overflow: 'hidden' }}
+      >
         <Topbar status={status} onRefresh={refresh} />
         <main style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
           <Routes>
@@ -71,6 +77,7 @@ function Layout() {
             <Route path="/settings" element={<P><SettingsPage status={status} /></P>} />
             <Route path="/stats"    element={<P><StatsPage /></P>} />
             <Route path="/teams"    element={<P><TeamPerformancePage /></P>} />
+            <Route path="/roster"   element={<P><RosterPage /></P>} />
           </Routes>
         </main>
       </div>

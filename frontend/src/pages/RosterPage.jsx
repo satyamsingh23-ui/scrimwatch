@@ -1,0 +1,254 @@
+import { useCallback, useEffect, useState } from 'react'
+import { Check, Clipboard, Copy, Users } from 'lucide-react'
+import { getRoster } from '../utils/api.js'
+
+const GUILD_KEY = 'sw_guild_id'
+
+function safeGet(key) {
+  try {
+    return localStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+function safeSet(key, value) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // Keep the page usable when browser storage is unavailable.
+  }
+}
+
+function PlayerRow({ player, isStarter, onCopyUid, copiedUid }) {
+  return (
+    <div className="flex flex-col gap-3 border-b border-[#1e2235] py-3 last:border-0 sm:flex-row sm:items-center">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="break-all text-sm font-semibold text-white">{player.ign}</span>
+          <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+            isStarter
+              ? 'border border-cyan-400/20 bg-cyan-400/10 text-cyan-300'
+              : 'border border-violet-400/20 bg-violet-400/10 text-violet-300'
+          }`}>
+            {isStarter ? 'Starter' : 'Sub'}
+          </span>
+        </div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#7f86a8]">
+          <span className="inline-flex items-center gap-1 font-mono text-[#c8cde8]">
+            {player.uid}
+          </span>
+          <span className="truncate">{player.discord_name}</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onCopyUid(player.uid)}
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-[#29304a] bg-[#0b0d17] px-2.5 py-1.5 text-xs text-[#aeb5d2] transition hover:border-cyan-400/40 hover:text-cyan-300"
+        aria-label={`Copy UID for ${player.ign}`}
+      >
+        {copiedUid === player.uid ? <Check size={14} /> : <Copy size={14} />}
+        {copiedUid === player.uid ? 'Copied' : 'Copy UID'}
+      </button>
+    </div>
+  )
+}
+
+function TeamCard({ team, onCopyUid, copiedUid, onCopyTeam, copiedTeam }) {
+  const starters = team.players.filter(player => player.role === 'starter')
+  const substitutes = team.players.filter(player => player.role === 'substitute')
+  const copyText = [...starters, ...substitutes]
+    .map(player => `${player.ign} - ${player.uid} - ${player.discord_name}`)
+    .join('\n')
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-[#232943] bg-[#10121e] shadow-[0_12px_32px_rgba(0,0,0,0.18)]">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#232943] bg-gradient-to-r from-cyan-400/[0.08] to-transparent px-4 py-4 sm:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-cyan-400/20 bg-cyan-400/10 text-cyan-300">
+            <Users size={17} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#737b9e]">Team</p>
+            <h2 className="break-all text-lg font-black tracking-wide text-white">{team.team_tag}</h2>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => onCopyTeam(team.team_tag, copyText)}
+          className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-400/15"
+        >
+          {copiedTeam === team.team_tag ? <Check size={14} /> : <Clipboard size={14} />}
+          {copiedTeam === team.team_tag ? 'Copied team' : 'Copy team'}
+        </button>
+      </header>
+
+      <div className="px-4 sm:px-5">
+        <div className="py-4">
+          <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">Starters</p>
+          {starters.length ? starters.map((player, index) => (
+            <PlayerRow
+              key={`${player.uid}-${player.ign}-${index}`}
+              player={player}
+              isStarter
+              onCopyUid={onCopyUid}
+              copiedUid={copiedUid}
+            />
+          )) : <p className="py-2 text-xs text-[#626a8b]">No starters approved</p>}
+        </div>
+
+        {substitutes.length > 0 && (
+          <div className="border-t border-[#1e2235] py-4">
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.16em] text-violet-300">Substitutes</p>
+            {substitutes.map((player, index) => (
+              <PlayerRow
+                key={`${player.uid}-${player.ign}-${index}`}
+                player={player}
+                isStarter={false}
+                onCopyUid={onCopyUid}
+                copiedUid={copiedUid}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+export default function RosterPage() {
+  const [guildId, setGuildId] = useState(() => safeGet(GUILD_KEY))
+  const [inputId, setInputId] = useState(guildId)
+  const [teams, setTeams] = useState([])
+  const [loading, setLoading] = useState(Boolean(guildId))
+  const [error, setError] = useState('')
+  const [copyError, setCopyError] = useState('')
+  const [copiedUid, setCopiedUid] = useState('')
+  const [copiedTeam, setCopiedTeam] = useState('')
+
+  const loadRoster = useCallback(async () => {
+    if (!guildId) {
+      setTeams([])
+      setLoading(false)
+      setError('')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    try {
+      const response = await getRoster(guildId)
+      setTeams(response.data?.teams || [])
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Unable to load roster.')
+      setTeams([])
+    } finally {
+      setLoading(false)
+    }
+  }, [guildId])
+
+  useEffect(() => {
+    loadRoster()
+  }, [loadRoster])
+
+  function applyServerId() {
+    const value = inputId.trim()
+    safeSet(GUILD_KEY, value)
+    setGuildId(value)
+  }
+
+  async function copyText(text, copiedValue, setCopiedValue) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedValue(copiedValue)
+      setCopyError('')
+      window.setTimeout(() => setCopiedValue(''), 1600)
+    } catch {
+      setCopyError('Clipboard access failed. Check browser permissions and try again.')
+    }
+  }
+
+  return (
+    <div className="mx-auto w-full max-w-5xl space-y-5 pb-8">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400">Team management</p>
+          <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">Approved Roster</h1>
+          <p className="mt-1 text-sm text-[#8189a9]">Tournament-ready lineups, grouped by team.</p>
+        </div>
+        <button
+          type="button"
+          onClick={loadRoster}
+          disabled={!guildId || loading}
+          className="rounded-lg border border-[#29304a] bg-[#10121e] px-3 py-2 text-xs font-semibold text-[#c8cde8] transition hover:border-cyan-400/40 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+
+      <form
+        className="flex flex-col gap-2 rounded-xl border border-[#1e2235] bg-[#10121e] p-3 sm:flex-row sm:items-end"
+        onSubmit={event => {
+          event.preventDefault()
+          applyServerId()
+        }}
+      >
+        <label className="min-w-0 flex-1">
+          <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-[#737b9e]">Server ID</span>
+          <input
+            value={inputId}
+            onChange={event => setInputId(event.target.value)}
+            placeholder="Paste your Discord Server ID"
+            className="w-full rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2.5 font-mono text-sm text-[#e2e6f5] outline-none transition placeholder:text-[#505775] focus:border-cyan-400/50"
+          />
+        </label>
+        <button
+          type="submit"
+          className="rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300"
+        >
+          Load roster
+        </button>
+      </form>
+
+      {copyError && (
+        <div role="alert" className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+          {copyError}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="rounded-xl border border-[#1e2235] bg-[#10121e] px-4 py-12 text-center">
+          <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/25 border-t-cyan-400" />
+          <p className="mt-3 font-mono text-xs text-[#7f86a8]">Loading approved roster…</p>
+        </div>
+      ) : error ? (
+        <div role="alert" className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-8 text-center text-sm text-rose-300">
+          Unable to load the roster. {error}
+        </div>
+      ) : !guildId ? (
+        <div className="rounded-xl border border-[#1e2235] bg-[#10121e] px-4 py-12 text-center">
+          <p className="text-sm font-semibold text-[#c8cde8]">Enter your Server ID to load the roster.</p>
+          <p className="mt-1 text-xs text-[#68708f]">Right-click your Discord server and choose Copy Server ID.</p>
+        </div>
+      ) : teams.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] px-4 py-12 text-center">
+          <Users className="mx-auto text-[#515a7a]" size={26} />
+          <p className="mt-3 text-sm font-semibold text-[#c8cde8]">No approved players yet. Post profile screenshots in your roster channel.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {teams.map(team => (
+            <TeamCard
+              key={team.team_tag}
+              team={team}
+              copiedUid={copiedUid}
+              copiedTeam={copiedTeam}
+              onCopyUid={uid => copyText(uid, uid, setCopiedUid)}
+              onCopyTeam={(tag, text) => copyText(text, tag, setCopiedTeam)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

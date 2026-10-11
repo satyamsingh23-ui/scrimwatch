@@ -9,10 +9,11 @@ const NAV = [
   { to: '/logs',     label: 'Logs',        icon: '>'  },
   { to: '/stats',    label: 'Player Stats', icon: '📊' },
   { to: '/teams',    label: 'Teams',       icon: '⚔️'  },
+  { to: '/roster',   label: 'Roster',      icon: '♙'  },
   { to: '/settings', label: 'Settings',    icon: '⚙'  },
 ]
 
-export default function Sidebar({ status }) {
+export default function Sidebar({ status, mobileHidden = false }) {
   const { pathname } = useLocation()
   const online = status?.running
 
@@ -22,10 +23,10 @@ export default function Sidebar({ status }) {
   }
 
   return (
-    <aside style={{
+    <aside className={mobileHidden ? 'hidden sm:flex' : ''} style={{
       position: 'fixed', top: 0, left: 0, height: '100vh', width: '208px',
       background: '#0d0f1a', borderRight: '1px solid #1e2235',
-      display: 'flex', flexDirection: 'column', zIndex: 40
+      display: mobileHidden ? undefined : 'flex', flexDirection: 'column', zIndex: 40
     }}>
       {/* Logo */}
       <div style={{ padding: '16px 14px 12px', borderBottom: '1px solid #1e2235', display: 'flex', alignItems: 'center', gap: 10 }}>

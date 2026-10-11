@@ -10,6 +10,7 @@ const META = {
   '/logs':     { title: 'System Logs',       sub: 'Live application logs'        },
   '/stats':    { title: 'Player Stats',      sub: 'Leaderboard & match history'  },
   '/teams':    { title: 'Team Performance',  sub: 'Squad stats, roles & AI analysis' },
+  '/roster':   { title: 'Roster',            sub: 'Approved players grouped by team' },
   '/settings': { title: 'Settings',          sub: 'Bot configuration & health'   },
 }
 
