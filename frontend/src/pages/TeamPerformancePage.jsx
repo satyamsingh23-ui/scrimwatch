@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react'
 import { getLeaderboard, getRecentStats } from '../utils/api.js'
+
+const TeamPerformanceCharts = lazy(() => import('../components/TeamPerformanceCharts.jsx'))
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const GUILD_KEY  = 'sw_guild_id'
@@ -10,13 +12,11 @@ function safeSet(k, v) { try { localStorage.setItem(k, v) } catch {} }
 function safeJSON(k, fb) { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? fb } catch { return fb } }
 
 const mono       = { fontFamily: 'monospace' }
-const card       = { background: '#111320', border: '1px solid #1e2235', borderRadius: 12 }
 const inp        = { background: '#07080f', border: '1px solid #1e2235', borderRadius: 8, padding: '8px 12px', fontSize: 13, color: '#c8cde8', fontFamily: 'monospace', outline: 'none' }
 const overlay    = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }
 const modalBox   = { background: '#111320', border: '1px solid #1e2235', borderRadius: 14, padding: 24, width: '100%', maxWidth: 480 }
 
 const TEAM_COLORS = ['#00e5ff', '#ffa502', '#7bed9f', '#a78bfa', '#ff6b81', '#eccc68']
-const MAP_COLOR   = { Erangel: '#4caf93', Miramar: '#d4a843', Rondo: '#7c6fcd', Sanhok: '#68a85e', Vikendi: '#7fb5c8', Nusa: '#e07060', Livik: '#a0c878' }
 const DAY_OPTS    = [7, 14, 30]
 
 const ROLES = [
@@ -72,47 +72,6 @@ function PlaystyleBar({ score }) {
         <div style={{ width: `${score}%`, height: '100%', background: color, borderRadius: 2, transition: 'width 0.4s' }} />
       </div>
       <span style={{ fontSize: 9, color, ...mono, flexShrink: 0, minWidth: 28, textAlign: 'right' }}>{score}%</span>
-    </div>
-  )
-}
-
-function MapBarChart({ data, teamColor }) {
-  if (!data.length) return (
-    <div style={{ padding: '24px 0', textAlign: 'center' }}>
-      <p style={{ color: '#5c6284', fontSize: 12, ...mono }}>Not enough map data yet</p>
-      <p style={{ color: '#2a2f4a', fontSize: 10, ...mono, marginTop: 4 }}>Need at least 2 matches per map</p>
-    </div>
-  )
-  const maxRate = Math.max(...data.map(d => d.winRate), 1)
-  const H = 100, barW = 40
-  const totalW = data.length * (barW + 16) + 16
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <svg width={totalW} height={H + 36} style={{ display: 'block' }}>
-        {data.map((d, i) => {
-          const x   = 16 + i * (barW + 16)
-          const barH = Math.max(Math.round((d.winRate / maxRate) * H), 2)
-          const y   = H - barH
-          const col = MAP_COLOR[d.map] || teamColor
-          return (
-            <g key={d.map}>
-              <rect x={x} y={y} width={barW} height={barH} rx={3} fill={col} opacity={0.85} />
-              <text x={x + barW / 2} y={y - 5} textAnchor="middle" fill={col} fontSize={10} fontFamily="monospace" fontWeight="600">{d.winRate}%</text>
-              <text x={x + barW / 2} y={H + 14} textAnchor="middle" fill="#5c6284" fontSize={9} fontFamily="monospace">{d.map.slice(0,3).toUpperCase()}</text>
-              <text x={x + barW / 2} y={H + 26} textAnchor="middle" fill="#2a2f4a" fontSize={8} fontFamily="monospace">{d.total}g</text>
-            </g>
-          )
-        })}
-      </svg>
-    </div>
-  )
-}
-
-function StatMini({ label, value, color }) {
-  return (
-    <div style={{ background: '#07080f', border: '1px solid #1e2235', borderRadius: 8, padding: '10px 14px', textAlign: 'center', minWidth: 0 }}>
-      <p style={{ fontSize: 9, color: '#5c6284', ...mono, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>{label}</p>
-      <p style={{ fontSize: 20, fontWeight: 700, color: color || '#c8cde8', lineHeight: 1 }}>{value ?? '—'}</p>
     </div>
   )
 }
@@ -234,6 +193,7 @@ export default function TeamPerformancePage() {
   const [lb,         setLb]         = useState([])
   const [recent,     setRecent]     = useState([])
   const [dataLoad,   setDataLoad]   = useState(false)
+  const [dataError,  setDataError]  = useState('')
   const [aiLoading,  setAiLoading]  = useState(false)
   const [aiReport,   setAiReport]   = useState(null)
   const [aiError,    setAiError]    = useState(null)
@@ -266,13 +226,18 @@ export default function TeamPerformancePage() {
   const fetchData = useCallback(async (gid, d) => {
     if (!gid) return
     setDataLoad(true)
+    setDataError('')
     try {
       const [lbRes, recRes] = await Promise.all([getLeaderboard(gid, d), getRecentStats(gid, d)])
       const players = lbRes?.data?.players  || []
       const records = recRes?.data?.records || []
       setLb(players)
       setRecent(records)
-    } catch { setLb([]); setRecent([]) }
+    } catch (error) {
+      setLb([])
+      setRecent([])
+      setDataError(error.response?.data?.detail || error.message || 'Unable to load team performance data.')
+    }
     finally  { setDataLoad(false) }
   }, [])
 
@@ -377,7 +342,6 @@ export default function TeamPerformancePage() {
 
   // ── Derived data ───────────────────────────────────────────────────────
   const team        = teams.find(t => t.id === selTeam)
-  const teamColor   = team?.color || '#00e5ff'
 
   // Match leaderboard entries to team players (direct + alias)
   const teamPlayers = lb.filter(p => {
@@ -389,39 +353,109 @@ export default function TeamPerformancePage() {
     return team?.players.includes(resolved) || team?.players.includes(r.player_name)
   })
 
-  const totalMatches = teamPlayers.reduce((s, p) => s + (p.matches || 0), 0)
-  const totalKills   = teamPlayers.reduce((s, p) => s + (p.total_kills   || 0), 0)
   const totalDamage  = teamPlayers.reduce((s, p) => s + (p.total_damage  || 0), 0)
   const totalAssists = teamPlayers.reduce((s, p) => s + (p.total_assists || 0), 0)
   const totalMVPs    = teamPlayers.reduce((s, p) => s + (p.mvp_count     || 0), 0)
-  const avgMatches   = teamPlayers.length ? Math.round(totalMatches / teamPlayers.length) : 0
-  const avgKills     = totalMatches ? (totalKills / avgMatches).toFixed(1) : '—'
 
-  const perPlayerWR = teamPlayers.map(p => {
-    const pm = teamRecent.filter(r => resolve(r.player_name) === resolve(p.player_name))
-    return pm.length ? pm.filter(r => r.placement === 1).length / pm.length : 0
+  const recentCutoff = Date.now() - days * 24 * 60 * 60 * 1000
+  const currentTeamRecords = teamRecent.filter(record => {
+    const detectedAt = Date.parse(record.detected_at || '')
+    return !Number.isFinite(detectedAt) || detectedAt >= recentCutoff
   })
-  const perPlayerT3 = teamPlayers.map(p => {
-    const pm = teamRecent.filter(r => resolve(r.player_name) === resolve(p.player_name))
-    return pm.length ? pm.filter(r => r.placement <= 3).length / pm.length : 0
+  const matchGroups = new Map()
+  currentTeamRecords.forEach((record, index) => {
+    const fallbackKey = record.detected_at
+      ? `${record.detected_at}|${record.map_name || ''}`
+      : `record-${index}`
+    const matchKey = record.image_hash || fallbackKey
+    if (!matchGroups.has(matchKey)) {
+      matchGroups.set(matchKey, {
+        map: record.map_name || 'Unknown',
+        records: [],
+        detectedAt: record.detected_at || '',
+      })
+    }
+    matchGroups.get(matchKey).records.push(record)
   })
-  const teamWinPct = perPlayerWR.length ? Math.round((perPlayerWR.reduce((a,b) => a+b, 0) / perPlayerWR.length) * 100) : 0
-  const teamTop3   = perPlayerT3.length ? Math.round((perPlayerT3.reduce((a,b) => a+b, 0) / perPlayerT3.length) * 100) : 0
+  const teamMatches = [...matchGroups.values()]
+    .map((match, index) => {
+      const placements = match.records
+        .map(record => Number(record.placement))
+        .filter(placement => Number.isFinite(placement) && placement > 0)
+      const placement = placements.length
+        ? placements.reduce((sum, value) => sum + value, 0) / placements.length
+        : null
+      return {
+        map: match.map,
+        placement,
+        kills: match.records.reduce((sum, record) => sum + (Number(record.kills) || 0), 0),
+        damage: match.records.reduce((sum, record) => sum + (Number(record.damage) || 0), 0),
+        detectedAt: match.detectedAt,
+        matchNumber: index + 1,
+      }
+    })
+    .sort((a, b) => {
+      const aDate = Date.parse(a.detectedAt || '')
+      const bDate = Date.parse(b.detectedAt || '')
+      return (Number.isFinite(bDate) ? bDate : 0) - (Number.isFinite(aDate) ? aDate : 0)
+    })
 
-  const mapBucket = {}
-  teamRecent.forEach(r => {
-    if (!r.map_name) return
-    if (!mapBucket[r.map_name]) mapBucket[r.map_name] = { wins: 0, total: 0 }
-    mapBucket[r.map_name].total++
-    if (r.placement === 1) mapBucket[r.map_name].wins++
-  })
-  const mapChartData = Object.entries(mapBucket)
-    .map(([map, d]) => ({ map, winRate: Math.round((d.wins / d.total) * 100), total: d.total }))
-    .filter(d => d.total >= 2)
-    .sort((a, b) => b.winRate - a.winRate)
+  const totalMatchCount = teamMatches.length
+  const ratedMatches = teamMatches.filter(match => match.placement !== null)
+  const winCount = teamMatches.filter(match => match.placement === 1).length
+  const topFiveCount = ratedMatches.filter(match => match.placement <= 5).length
+  const averagePlacement = ratedMatches.length
+    ? ratedMatches.reduce((sum, match) => sum + match.placement, 0) / ratedMatches.length
+    : 0
+  const avgKills = totalMatchCount
+    ? (teamMatches.reduce((sum, match) => sum + match.kills, 0) / totalMatchCount).toFixed(1)
+    : '—'
+  const avgDamage = totalMatchCount
+    ? Math.round(teamMatches.reduce((sum, match) => sum + match.damage, 0) / totalMatchCount)
+    : 0
+  const teamWinPct = ratedMatches.length ? Math.round((winCount / ratedMatches.length) * 100) : 0
+  const teamTop3 = ratedMatches.length
+    ? Math.round((ratedMatches.filter(match => match.placement <= 3).length / ratedMatches.length) * 100)
+    : 0
+  const teamTop5Pct = ratedMatches.length ? Math.round((topFiveCount / ratedMatches.length) * 100) : 0
 
-  const bestMap  = mapChartData[0]?.map || '—'
-  const worstMap = mapChartData.length > 1 ? mapChartData[mapChartData.length - 1].map : '—'
+  const mapBuckets = new Map()
+  teamMatches.forEach(match => {
+    if (!match.map || match.map === 'Unknown') return
+    if (!mapBuckets.has(match.map)) {
+      mapBuckets.set(match.map, { map: match.map, matches: 0, ratedMatches: 0, wins: 0, placements: 0, kills: 0, damage: 0 })
+    }
+    const bucket = mapBuckets.get(match.map)
+    bucket.matches += 1
+    if (match.placement !== null) {
+      bucket.ratedMatches += 1
+      bucket.wins += match.placement === 1 ? 1 : 0
+      bucket.placements += match.placement
+    }
+    bucket.kills += match.kills
+    bucket.damage += match.damage
+  })
+  const mapAnalytics = [...mapBuckets.values()]
+    .map(map => ({
+      ...map,
+      winRate: map.ratedMatches ? Math.round((map.wins / map.ratedMatches) * 100) : 0,
+      averagePlacement: map.ratedMatches ? map.placements / map.ratedMatches : 0,
+      averageKills: map.kills / map.matches,
+      averageDamage: map.damage / map.matches,
+    }))
+    .sort((a, b) => b.matches - a.matches)
+  const mapChartData = [...mapAnalytics].sort((a, b) => b.averageKills - a.averageKills)
+  const bestMap = mapAnalytics.length
+    ? [...mapAnalytics].sort((a, b) => b.winRate - a.winRate || b.matches - a.matches)[0].map
+    : '—'
+  const worstMap = mapAnalytics.length > 1
+    ? [...mapAnalytics].sort((a, b) => a.winRate - b.winRate || a.matches - b.matches)[0].map
+    : '—'
+  const placementChartData = teamMatches.slice(0, 20).reverse().map((match, index) => ({
+    match: `#${index + 1}`,
+    placement: match.placement,
+    date: match.detectedAt ? new Date(match.detectedAt).toLocaleString() : 'Recent match',
+  }))
 
   // ── AI with roles ──────────────────────────────────────────────────────
   function openRoleModal() { setShowRoles(true) }
@@ -447,7 +481,7 @@ export default function TeamPerformancePage() {
       return `${p.player_name} | Role: ${role} | ${kpm} kills/match | ${dpm} dmg/match | ${style}% aggression`
     }).join('\n')
 
-    const mapSum = mapChartData.map(d => `${d.map} ${d.winRate}% (${d.total} games)`).join(', ') || 'insufficient data'
+    const mapSum = mapChartData.map(d => `${d.map} ${d.winRate}% (${d.matches} games)`).join(', ') || 'insufficient data'
 
     const prompt = `You are an expert BGMI esports coach. Write a detailed tactical scouting report for squad "${team.name}".
 
@@ -491,9 +525,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-      {/* Fuzzy match confirmation — batch modal */}
+    <div className="mx-auto w-full max-w-7xl space-y-5 pb-8">
       {fuzzyQ.length > 0 && (
         <FuzzyModal
           matches={fuzzyQ}
@@ -503,7 +535,6 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
         />
       )}
 
-      {/* Role assignment modal */}
       {showRoles && team && teamPlayers.length > 0 && (
         <RoleModal
           players={canonicalPlayers}
@@ -513,286 +544,349 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
         />
       )}
 
-      {/* Guild ID + time window */}
-      <div style={{ ...card, padding: 16 }}>
-        <p style={{ fontSize: 10, color: '#5c6284', ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Server (Guild) ID</p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input style={{ ...inp, flex: 1, minWidth: 200 }} placeholder="Paste your Discord Server ID…"
-            value={inputId} onChange={e => setInputId(e.target.value)} onKeyDown={e => e.key === 'Enter' && applyGuild()} />
-          <button onClick={applyGuild} style={{ padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: '#00e5ff', color: '#07080f', border: 'none', cursor: 'pointer' }}>Load</button>
-          <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
-            {DAY_OPTS.map(d => (
-              <button key={d} onClick={() => setDays(d)} style={{
-                padding: '6px 12px', borderRadius: 7, fontSize: 11, ...mono, cursor: 'pointer', border: '1px solid', transition: 'all 0.15s',
-                borderColor: days === d ? '#00e5ff' : '#1e2235',
-                background:  days === d ? 'rgba(0,229,255,0.08)' : 'transparent',
-                color:       days === d ? '#00e5ff' : '#5c6284',
-              }}>{d}d</button>
-            ))}
+      <header className="flex flex-col gap-4 rounded-2xl border border-[#1e2235] bg-gradient-to-br from-[#111522] via-[#0c0e18] to-[#080a12] p-5 sm:p-7">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400">ScrimWatch · analytics</p>
+            <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">Team performance</h1>
+            <p className="mt-1 text-sm text-[#8189a9]">Squad results, map strengths and match-by-match momentum.</p>
           </div>
+          <span className="rounded-full border border-cyan-400/20 bg-cyan-400/[0.07] px-3 py-1.5 font-mono text-[11px] text-cyan-200">
+            {days}-day window
+          </span>
         </div>
-      </div>
 
-      {!guildId && (
-        <div style={{ ...card, padding: 48, textAlign: 'center' }}>
-          <p style={{ color: '#c8cde8', fontSize: 14 }}>Enter your Server ID above to load team data</p>
-          <p style={{ color: '#5c6284', fontSize: 12, ...mono, marginTop: 6 }}>Right-click your server in Discord → Copy Server ID</p>
-        </div>
-      )}
-
-      {guildId && (
-        <>
-          {/* Team tabs */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            {teams.map(t => (
-              <button key={t.id} onClick={() => { setSelTeam(t.id); setEditMode(false); setAiReport(null) }}
-                style={{
-                  padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  ...mono, border: '1px solid', transition: 'all 0.15s',
-                  borderColor: selTeam === t.id ? t.color : '#1e2235',
-                  background:  selTeam === t.id ? `${t.color}18` : 'transparent',
-                  color:       selTeam === t.id ? t.color : '#5c6284',
-                }}>
-                {t.name} <span style={{ opacity: 0.6 }}>{t.players.length}p</span>
+        <div className="flex flex-col gap-3 rounded-xl border border-[#1e2235] bg-[#07080f]/70 p-3 sm:flex-row sm:items-end">
+          <label className="min-w-0 flex-1">
+            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-[#737b9e]">Discord server ID</span>
+            <input
+              value={inputId}
+              onChange={event => setInputId(event.target.value)}
+              onKeyDown={event => event.key === 'Enter' && applyGuild()}
+              placeholder="Paste your server ID"
+              className="w-full rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2.5 font-mono text-sm text-[#e2e6f5] outline-none placeholder:text-[#505775] focus:border-cyan-400/50"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={applyGuild}
+            disabled={!inputId.trim()}
+            className="rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Load server
+          </button>
+          <div className="flex gap-1.5">
+            {DAY_OPTS.map(option => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setDays(option)}
+                className={`rounded-lg border px-3 py-2 font-mono text-xs transition ${
+                  days === option
+                    ? 'border-cyan-400/50 bg-cyan-400/10 text-cyan-300'
+                    : 'border-[#252b43] text-[#737b9e] hover:border-[#46506e] hover:text-white'
+                }`}
+              >
+                {option}d
               </button>
             ))}
-            <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
-              <input style={{ ...inp, width: 148, fontSize: 12, padding: '6px 10px' }} placeholder="New team name…"
-                value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === 'Enter' && createTeam()} />
-              <button onClick={createTeam} style={{ padding: '6px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600, background: 'rgba(0,229,255,0.1)', color: '#00e5ff', border: '1px solid rgba(0,229,255,0.25)', cursor: 'pointer', ...mono }}>+ Create</button>
-            </div>
           </div>
+        </div>
+      </header>
 
-          {!team && (
-            <div style={{ ...card, padding: 48, textAlign: 'center' }}>
-              <p style={{ color: '#c8cde8', fontSize: 14 }}>Create or select a team above</p>
+      {!guildId ? (
+        <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] px-4 py-14 text-center">
+          <p className="text-sm font-semibold text-[#c8cde8]">Enter a server ID to view team analytics.</p>
+          <p className="mt-1 text-xs text-[#68708f]">Right-click your Discord server and choose Copy Server ID.</p>
+        </div>
+      ) : (
+        <>
+          <section className="flex flex-col gap-3 rounded-xl border border-[#1e2235] bg-[#10121e] p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              {teams.map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => { setSelTeam(item.id); setEditMode(false); setAiReport(null) }}
+                  className={`rounded-lg border px-3 py-2 text-left transition ${
+                    selTeam === item.id
+                      ? 'border-cyan-400/40 bg-cyan-400/[0.08] text-white'
+                      : 'border-[#252b43] text-[#8991b0] hover:border-[#46506e] hover:text-white'
+                  }`}
+                >
+                  <span className="block text-sm font-semibold">{item.name}</span>
+                  <span className="font-mono text-[10px] text-[#737b9e]">{item.players.length} players</span>
+                </button>
+              ))}
             </div>
-          )}
+            <form
+              className="flex gap-2"
+              onSubmit={event => {
+                event.preventDefault()
+                createTeam()
+              }}
+            >
+              <input
+                value={newName}
+                onChange={event => setNewName(event.target.value)}
+                placeholder="New team name"
+                className="min-w-0 rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2 font-mono text-xs text-[#e2e6f5] outline-none placeholder:text-[#505775] focus:border-cyan-400/50"
+              />
+              <button type="submit" className="whitespace-nowrap rounded-lg border border-cyan-400/25 bg-cyan-400/10 px-3 py-2 text-xs font-bold text-cyan-200 hover:bg-cyan-400/15">
+                + Create team
+              </button>
+            </form>
+          </section>
 
-          {team && (
+          {!team ? (
+            <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] px-4 py-14 text-center">
+              <p className="text-sm font-semibold text-[#c8cde8]">Create or select a team to begin.</p>
+              <p className="mt-1 text-xs text-[#68708f]">Teams and roster assignments are saved in this browser.</p>
+            </div>
+          ) : (
             <>
-              {/* Roster card */}
-              <div style={{ ...card, padding: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: editMode ? 12 : 0 }}>
+              <section className="rounded-xl border border-[#1e2235] bg-[#10121e] p-4 sm:p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p style={{ fontSize: 10, color: teamColor, ...mono, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                      {team.name} · {team.players.length} players
-                      {dataLoad && <span style={{ color: '#5c6284', marginLeft: 8 }}>· syncing…</span>}
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">Active squad</p>
+                    <h2 className="mt-1 text-xl font-black text-white">{team.name}</h2>
+                    <p className="mt-1 text-xs text-[#737b9e]">
+                      {team.players.length} rostered players
+                      {dataLoad && <span className="ml-2 text-cyan-300">· syncing stats</span>}
+                      {Object.keys(aliases).filter(key => !key.startsWith('__rejected__')).length > 0
+                        && <span className="ml-2">· {Object.keys(aliases).filter(key => !key.startsWith('__rejected__')).length} saved aliases</span>}
                     </p>
-                    {Object.keys(aliases).filter(k => !k.startsWith('__rejected__')).length > 0 && (
-                      <p style={{ fontSize: 9, color: '#5c6284', ...mono, marginTop: 3 }}>
-                        {Object.keys(aliases).filter(k => !k.startsWith('__rejected__')).length} alias(es) active
-                      </p>
-                    )}
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={() => setEditMode(p => !p)}
-                      style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', ...mono, border: '1px solid #1e2235', background: 'transparent', color: '#5c6284' }}>
-                      {editMode ? 'Done' : '✎ Edit roster'}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditMode(value => !value)}
+                      className="rounded-lg border border-[#29304a] px-3 py-2 text-xs font-semibold text-[#aeb5d2] hover:border-cyan-400/40 hover:text-cyan-200"
+                    >
+                      {editMode ? 'Done editing' : 'Edit roster'}
                     </button>
-                    <button onClick={() => deleteTeam(team.id)}
-                      style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', ...mono, border: '1px solid rgba(255,61,107,0.3)', background: 'transparent', color: '#ff3d6b' }}>
-                      Delete
+                    <button
+                      type="button"
+                      onClick={() => deleteTeam(team.id)}
+                      className="rounded-lg border border-rose-500/25 px-3 py-2 text-xs font-semibold text-rose-300 hover:bg-rose-500/10"
+                    >
+                      Delete team
                     </button>
                   </div>
                 </div>
-
                 {editMode && (
-                  <div>
-                    {lb.length === 0 && !dataLoad && <p style={{ fontSize: 11, color: '#5c6284', ...mono }}>No player data found for this server + time window.</p>}
-                    {lb.length > 0 && (
-                      <>
-                        <p style={{ fontSize: 10, color: '#5c6284', ...mono, marginBottom: 8 }}>Click to add / remove from {team.name}</p>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                          {lb.map(p => {
-                            const resolved = resolve(p.player_name)
-                            const inTeam   = team.players.includes(resolved) || team.players.includes(p.player_name)
-                            const isAlias  = aliases[p.player_name] && aliases[p.player_name] !== p.player_name
-                            return (
-                              <button key={p.player_name}
-                                onClick={() => togglePlayer(isAlias ? aliases[p.player_name] : p.player_name)}
-                                style={{
-                                  padding: '5px 12px', borderRadius: 7, fontSize: 12, cursor: 'pointer', ...mono,
-                                  border: '1px solid', transition: 'all 0.15s',
-                                  borderColor: inTeam ? teamColor : '#1e2235',
-                                  background:  inTeam ? `${teamColor}18` : '#07080f',
-                                  color:       inTeam ? teamColor : '#5c6284',
-                                  fontWeight:  inTeam ? 700 : 400,
-                                }}>
-                                {inTeam ? '✓ ' : ''}{p.player_name}
-                                {isAlias && <span style={{ fontSize: 9, marginLeft: 4, opacity: 0.6 }}>≈{aliases[p.player_name]}</span>}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {team.players.length === 0 && (
-                <div style={{ ...card, padding: 40, textAlign: 'center' }}>
-                  <p style={{ color: '#c8cde8', fontSize: 14 }}>No players on {team.name} yet</p>
-                  <p style={{ color: '#5c6284', fontSize: 12, ...mono, marginTop: 6 }}>Click "Edit roster" above to add players</p>
-                </div>
-              )}
-
-              {teamPlayers.length > 0 && (
-                <>
-                  {/* Stat summary */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 10 }}>
-                    <StatMini label="WWCD Rate"   value={`${teamWinPct}%`} color={teamWinPct > 15 ? '#7bed9f' : teamWinPct > 8 ? '#ffa502' : '#ff4757'} />
-                    <StatMini label="Top-3 Rate"  value={`${teamTop3}%`}  color={teamTop3 > 35 ? '#7bed9f' : '#c8cde8'} />
-                    <StatMini label="Avg K/Match" value={avgKills}         color="#00ff88" />
-                    <StatMini label="Avg Matches" value={avgMatches}       color="#c8cde8" />
-                    <StatMini label="Total MVPs"  value={totalMVPs}        color="#ffb800" />
-                    <StatMini label="Best Map"    value={bestMap}          color={MAP_COLOR[bestMap] || '#c8cde8'} />
-                  </div>
-
-                  {/* Charts */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                    <div style={{ ...card, padding: 16 }}>
-                      <p style={{ fontSize: 10, color: teamColor, ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>Map win rates (WWCD%)</p>
-                      {bestMap !== '—' && (
-                        <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 10, ...mono, padding: '2px 7px', borderRadius: 5, background: 'rgba(123,237,159,0.1)', color: '#7bed9f', border: '1px solid rgba(123,237,159,0.2)' }}>Best: {bestMap}</span>
-                          {worstMap !== '—' && worstMap !== bestMap && (
-                            <span style={{ fontSize: 10, ...mono, padding: '2px 7px', borderRadius: 5, background: 'rgba(255,71,87,0.1)', color: '#ff4757', border: '1px solid rgba(255,71,87,0.2)' }}>Worst: {worstMap}</span>
-                          )}
-                        </div>
-                      )}
-                      <MapBarChart data={mapChartData} teamColor={teamColor} />
-                    </div>
-
-                    <div style={{ ...card, padding: 16 }}>
-                      <p style={{ fontSize: 10, color: teamColor, ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>Role composition</p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        {teamPlayers.map(p => {
-                          const assignedRole = savedRoles[p.player_name]
-                          const roleInfo     = ROLES.find(r => r.value === assignedRole)
-                          const pct          = playstyleScore(p)
+                  <div className="mt-4 border-t border-[#1e2235] pt-4">
+                    <p className="mb-3 text-xs text-[#8189a9]">Select players to include in {team.name}. Fuzzy name suggestions are reviewed separately.</p>
+                    {dataLoad ? (
+                      <p className="text-xs text-[#737b9e]">Loading available players…</p>
+                    ) : lb.length === 0 ? (
+                      <p className="text-xs text-[#737b9e]">No player stats are available for this server and time window.</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {lb.map(player => {
+                          const resolved = resolve(player.player_name)
+                          const inTeam = team.players.includes(resolved) || team.players.includes(player.player_name)
+                          const isAlias = aliases[player.player_name] && aliases[player.player_name] !== player.player_name
                           return (
-                            <div key={p.player_name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                              <span style={{ fontSize: 13, fontWeight: 700, color: '#c8cde8', minWidth: 90, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {p.player_name}
-                              </span>
-                              {roleInfo ? (
-                                <span style={{ fontSize: 10, ...mono, padding: '2px 8px', borderRadius: 5, flexShrink: 0, background: `${roleInfo.color}18`, color: roleInfo.color, border: `1px solid ${roleInfo.color}44`, whiteSpace: 'nowrap' }}>
-                                  {roleInfo.label}
-                                </span>
-                              ) : (
-                                <span style={{ fontSize: 10, color: '#5c6284', ...mono, flexShrink: 0 }}>not set</span>
-                              )}
-                              <div style={{ flex: 1, minWidth: 60 }}><PlaystyleBar score={pct} /></div>
-                            </div>
+                            <button
+                              key={player.player_name}
+                              type="button"
+                              onClick={() => togglePlayer(isAlias ? aliases[player.player_name] : player.player_name)}
+                              className={`rounded-lg border px-3 py-2 text-xs transition ${
+                                inTeam
+                                  ? 'border-cyan-400/40 bg-cyan-400/10 font-semibold text-cyan-200'
+                                  : 'border-[#252b43] bg-[#07080f] text-[#8991b0] hover:border-[#46506e] hover:text-white'
+                              }`}
+                            >
+                              {inTeam ? '✓ ' : ''}{player.player_name}
+                              {isAlias && <span className="ml-1 text-violet-300">≈ {aliases[player.player_name]}</span>}
+                            </button>
                           )
                         })}
                       </div>
-                    </div>
+                    )}
                   </div>
+                )}
+              </section>
 
-                  {/* Player table */}
-                  <div style={{ ...card, overflow: 'hidden' }}>
-                    <div style={{ padding: '14px 18px', borderBottom: '1px solid #1e2235' }}>
-                      <p style={{ fontSize: 10, color: teamColor, ...mono, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Player breakdown · last {days} days</p>
+              {dataError && (
+                <div role="alert" className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+                  Could not refresh performance data. {dataError}
+                </div>
+              )}
+
+              {dataLoad && teamPlayers.length === 0 ? (
+                <div className="rounded-xl border border-[#1e2235] bg-[#10121e] px-4 py-12 text-center">
+                  <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/25 border-t-cyan-400" />
+                  <p className="mt-3 font-mono text-xs text-[#7f86a8]">Loading squad analytics…</p>
+                </div>
+              ) : dataError && teamPlayers.length === 0 ? (
+                <div role="alert" className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-10 text-center text-sm text-rose-300">
+                  Unable to load team analytics. {dataError}
+                </div>
+              ) : team.players.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] px-4 py-12 text-center">
+                  <p className="text-sm font-semibold text-[#c8cde8]">No players assigned to {team.name} yet.</p>
+                  <p className="mt-1 text-xs text-[#68708f]">Choose Edit roster above to add players.</p>
+                </div>
+              ) : teamPlayers.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] px-4 py-12 text-center">
+                  <p className="text-sm font-semibold text-[#c8cde8]">No performance data for this squad yet.</p>
+                  <p className="mt-1 text-xs text-[#68708f]">Try another time window or check back after match stats are recorded.</p>
+                </div>
+              ) : (
+                <>
+                  <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                    {[
+                      ['Matches played', totalMatchCount, 'Recent match records'],
+                      ['Chicken dinner', `${teamWinPct}%`, `${winCount} first-place finish${winCount === 1 ? '' : 'es'}`],
+                      ['Top-5 finish', `${teamTop5Pct}%`, `${topFiveCount} top-five result${topFiveCount === 1 ? '' : 's'}`],
+                      ['Avg placement', averagePlacement ? averagePlacement.toFixed(1) : '—', 'Lower is better'],
+                      ['Avg kills / match', avgKills, 'Squad total per match'],
+                      ['Avg damage / match', avgDamage.toLocaleString(), 'Squad total per match'],
+                    ].map(([label, value, detail], index) => (
+                      <article key={label} className={`rounded-xl border bg-[#10121e] p-4 ${index === 1 ? 'border-cyan-400/30 shadow-[0_0_24px_rgba(0,229,255,0.06)]' : 'border-[#1e2235]'}`}>
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-[#737b9e]">{label}</p>
+                        <p className="mt-2 text-2xl font-black tracking-tight text-white sm:text-3xl">{value}</p>
+                        <p className="mt-1 text-[10px] text-[#626a8b]">{detail}</p>
+                      </article>
+                    ))}
+                  </section>
+
+                  <section className="space-y-3">
+                    <div className="flex flex-wrap items-end justify-between gap-2">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">Map report</p>
+                        <h2 className="mt-1 text-lg font-bold text-white">Per-map performance</h2>
+                      </div>
+                      <p className="font-mono text-[10px] text-[#737b9e]">Sorted by matches played</p>
                     </div>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                        <thead>
-                          <tr style={{ background: 'rgba(0,0,0,0.3)', borderBottom: '1px solid #1e2235' }}>
-                            {['Player','Role','Matches','Kills','Avg K','Damage','Avg DMG','Assists','MVP','Win%','Rating'].map(h => (
-                              <th key={h} style={{ padding: '9px 12px', textAlign: 'left', fontSize: 9, color: '#5c6284', textTransform: 'uppercase', letterSpacing: '0.07em', whiteSpace: 'nowrap', ...mono }}>{h}</th>
-                            ))}
-                          </tr>
+                    {mapAnalytics.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] p-7 text-center text-sm text-[#8189a9]">
+                        No map-tagged match data is available in this time window.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {mapAnalytics.map(map => (
+                          <article key={map.map} className="rounded-xl border border-[#1e2235] bg-[#10121e] p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <h3 className="text-lg font-black text-white">{map.map}</h3>
+                                <p className="mt-0.5 font-mono text-[10px] text-[#737b9e]">{map.matches} match{map.matches === 1 ? '' : 'es'}</p>
+                              </div>
+                              <div className="flex flex-wrap justify-end gap-1.5">
+                                {map.map === bestMap && <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-emerald-300">Best map</span>}
+                                {map.map === worstMap && map.map !== bestMap && <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-rose-300">Needs work</span>}
+                              </div>
+                            </div>
+                            <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
+                              {[
+                                ['Chicken dinner', `${map.winRate}%`],
+                                ['Avg placement', map.averagePlacement.toFixed(1)],
+                                ['Avg kills', map.averageKills.toFixed(1)],
+                                ['Avg damage', Math.round(map.averageDamage).toLocaleString()],
+                              ].map(([label, value]) => (
+                                <div key={label}>
+                                  <p className="text-[9px] uppercase tracking-wider text-[#737b9e]">{label}</p>
+                                  <p className="mt-0.5 font-mono text-sm font-bold text-[#d9def0]">{value}</p>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-4">
+                              <div className="mb-1.5 flex justify-between text-[9px] font-semibold uppercase tracking-wider text-[#737b9e]">
+                                <span>Win rate</span><span className="text-cyan-300">{map.winRate}%</span>
+                              </div>
+                              <div className="h-1.5 overflow-hidden rounded-full bg-[#20243a]">
+                                <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-300" style={{ width: `${map.winRate}%` }} />
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  <Suspense fallback={<div className="rounded-xl border border-[#1e2235] bg-[#10121e] p-6 text-center text-sm text-[#737b9e]">Loading charts…</div>}>
+                    <TeamPerformanceCharts
+                      placementData={placementChartData}
+                      mapData={mapChartData}
+                    />
+                  </Suspense>
+
+                  <section className="overflow-hidden rounded-xl border border-[#1e2235] bg-[#10121e]">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1e2235] px-4 py-4 sm:px-5">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">Roster insights</p>
+                        <h2 className="mt-1 text-base font-bold text-white">Player breakdown</h2>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={openRoleModal}
+                        disabled={aiLoading}
+                        className="rounded-lg border border-cyan-400/25 bg-cyan-400/10 px-3 py-2 text-xs font-bold text-cyan-200 transition hover:bg-cyan-400/15 disabled:opacity-50"
+                      >
+                        {aiLoading ? 'Analyzing…' : aiReport ? 'Regenerate scouting report' : 'Generate scouting report'}
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[900px] border-collapse text-left text-xs">
+                        <thead className="bg-[#0b0d17] text-[9px] uppercase tracking-wider text-[#737b9e]">
+                          <tr>{['Player', 'Role', 'Matches', 'Kills', 'Avg kills', 'Damage', 'Avg damage', 'Assists', 'MVPs', 'Win rate', 'Rating'].map(label => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr>
                         </thead>
                         <tbody>
-                          {teamPlayers.map((p, i) => {
-                            const assignedRole = savedRoles[p.player_name]
-                            const roleInfo     = ROLES.find(r => r.value === assignedRole)
-                            const pm  = teamRecent.filter(r => resolve(r.player_name) === resolve(p.player_name))
-                            const wr  = pm.length ? Math.round((pm.filter(r => r.placement === 1).length / pm.length) * 100) : 0
-                            const isAliased = Object.values(aliases).includes(p.player_name) || aliases[p.player_name]
+                          {teamPlayers.map((player, index) => {
+                            const roleInfo = ROLES.find(role => role.value === savedRoles[player.player_name])
+                            const playerMatches = currentTeamRecords.filter(record => resolve(record.player_name) === resolve(player.player_name))
+                            const winRate = playerMatches.length
+                              ? Math.round((playerMatches.filter(record => Number(record.placement) === 1).length / playerMatches.length) * 100)
+                              : 0
+                            const isAliased = Object.values(aliases).includes(player.player_name) || aliases[player.player_name]
                             return (
-                              <tr key={p.player_name} style={{ borderBottom: '1px solid rgba(30,34,53,0.5)' }}
-                                onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,229,255,0.04)'}
-                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                                <td style={{ padding: '10px 12px', fontWeight: 700, color: '#fff', whiteSpace: 'nowrap' }}>
-                                  {p.player_name}
-                                  {i === 0 && <span style={{ fontSize: 8, color: '#ffa502', ...mono, marginLeft: 5 }}>TOP</span>}
-                                  {isAliased && <span style={{ fontSize: 8, color: '#a78bfa', ...mono, marginLeft: 5 }}>≈</span>}
+                              <tr key={player.player_name} className="border-t border-[#1e2235] text-[#c8cde8] hover:bg-cyan-400/[0.025]">
+                                <td className="whitespace-nowrap px-4 py-3 font-semibold text-white">
+                                  {player.player_name}
+                                  {index === 0 && <span className="ml-2 text-[9px] text-amber-300">TOP</span>}
+                                  {isAliased && <span className="ml-1 text-[9px] text-violet-300">≈</span>}
                                 </td>
-                                <td style={{ padding: '10px 12px' }}>
-                                  {roleInfo ? (
-                                    <span style={{ fontSize: 10, ...mono, padding: '2px 7px', borderRadius: 5, background: `${roleInfo.color}18`, color: roleInfo.color, border: `1px solid ${roleInfo.color}44`, whiteSpace: 'nowrap' }}>
-                                      {roleInfo.label}
-                                    </span>
-                                  ) : <span style={{ color: '#2a2f4a', fontSize: 11 }}>—</span>}
-                                </td>
-                                <td style={{ padding: '10px 12px', color: '#c8cde8', ...mono }}>{p.matches}</td>
-                                <td style={{ padding: '10px 12px', color: '#00ff88', fontWeight: 700, ...mono }}>{p.total_kills}</td>
-                                <td style={{ padding: '10px 12px', color: '#5c6284', ...mono }}>{p.avg_kills}</td>
-                                <td style={{ padding: '10px 12px', color: '#a78bfa', ...mono }}>{p.total_damage?.toLocaleString() || '—'}</td>
-                                <td style={{ padding: '10px 12px', color: '#5c6284', ...mono }}>{p.avg_damage || '—'}</td>
-                                <td style={{ padding: '10px 12px', color: '#c8cde8', ...mono }}>{p.total_assists}</td>
-                                <td style={{ padding: '10px 12px', color: '#ffb800', ...mono }}>{p.mvp_count > 0 ? `⭐ ×${p.mvp_count}` : '—'}</td>
-                                <td style={{ padding: '10px 12px', fontWeight: 700, ...mono, color: wr > 15 ? '#7bed9f' : wr > 8 ? '#ffa502' : '#5c6284' }}>{wr}%</td>
-                                <td style={{ padding: '10px 12px', color: '#5c6284', ...mono }}>{p.avg_rating || '—'}</td>
+                                <td className="px-4 py-3">{roleInfo ? <span style={{ color: roleInfo.color }}>{roleInfo.label}</span> : '—'}</td>
+                                <td className="px-4 py-3 font-mono">{player.matches}</td>
+                                <td className="px-4 py-3 font-mono text-emerald-300">{player.total_kills}</td>
+                                <td className="px-4 py-3 font-mono">{player.avg_kills}</td>
+                                <td className="px-4 py-3 font-mono text-violet-300">{player.total_damage?.toLocaleString() || '—'}</td>
+                                <td className="px-4 py-3 font-mono">{player.avg_damage || '—'}</td>
+                                <td className="px-4 py-3 font-mono">{player.total_assists}</td>
+                                <td className="px-4 py-3 font-mono text-amber-300">{player.mvp_count || '—'}</td>
+                                <td className="px-4 py-3 font-mono">{winRate}%</td>
+                                <td className="px-4 py-3 font-mono">{player.avg_rating || '—'}</td>
                               </tr>
                             )
                           })}
                         </tbody>
                       </table>
                     </div>
-                  </div>
+                  </section>
 
-                  {/* AI scouting report */}
-                  <div style={{ ...card, padding: 18 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <section className="rounded-xl border border-[#1e2235] bg-[#10121e] p-4 sm:p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <p style={{ fontSize: 10, color: teamColor, ...mono, textTransform: 'uppercase', letterSpacing: '0.08em' }}>AI scouting report</p>
-                        <p style={{ fontSize: 11, color: '#5c6284', ...mono, marginTop: 2 }}>Assign roles then generate a tactical breakdown</p>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">AI coach desk</p>
+                        <h2 className="mt-1 text-base font-bold text-white">Tactical scouting report</h2>
+                        <p className="mt-1 text-xs text-[#737b9e]">Assign player roles before generating a squad analysis.</p>
                       </div>
-                      <button onClick={openRoleModal} disabled={aiLoading}
-                        style={{
-                          padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                          cursor: aiLoading ? 'default' : 'pointer', ...mono, border: '1px solid',
-                          borderColor: teamColor, background: `${teamColor}18`, color: teamColor,
-                          opacity: aiLoading ? 0.5 : 1, transition: 'opacity 0.2s',
-                        }}>
-                        {aiLoading ? '⟳ Analyzing…' : aiReport ? '↺ Regenerate' : '★ Generate report'}
-                      </button>
                     </div>
-
-                    {!aiReport && !aiLoading && !aiError && (
-                      <div style={{ padding: '20px 0', textAlign: 'center', borderTop: '1px solid #1e2235' }}>
-                        <p style={{ color: '#5c6284', fontSize: 12, ...mono }}>Click "Generate report" — you'll assign roles before the AI analyzes</p>
-                      </div>
-                    )}
-                    {aiLoading && (
-                      <div style={{ padding: '20px 0', textAlign: 'center', borderTop: '1px solid #1e2235' }}>
-                        <p style={{ color: '#5c6284', fontSize: 12, ...mono }}>Analyzing {teamPlayers.length} players with assigned roles…</p>
-                      </div>
-                    )}
-                    {aiError && (
-                      <div style={{ padding: '10px 14px', background: 'rgba(255,61,107,0.08)', border: '1px solid rgba(255,61,107,0.2)', borderRadius: 8, marginTop: 8 }}>
-                        <p style={{ color: '#ff3d6b', fontSize: 12, ...mono }}>{aiError}</p>
-                      </div>
-                    )}
+                    {aiLoading && <p className="mt-4 rounded-lg border border-[#1e2235] bg-[#0b0d17] p-4 text-sm text-[#aeb5d2]">Analyzing {teamPlayers.length} players with assigned roles…</p>}
+                    {aiError && <p role="alert" className="mt-4 rounded-lg border border-rose-500/25 bg-rose-500/10 p-3 text-sm text-rose-300">{aiError}</p>}
                     {aiReport && (
-                      <div style={{ borderTop: '1px solid #1e2235', paddingTop: 14 }}>
-                        <p style={{ fontSize: 9, color: '#5c6284', ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+                      <div className="mt-4 border-t border-[#1e2235] pt-4">
+                        <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-[#737b9e]">
                           {team.name} · {days}d window · {new Date().toLocaleDateString()}
-                          {savedRoles && Object.keys(savedRoles).length > 0 && (
-                            <span style={{ marginLeft: 8 }}>
-                              · {Object.entries(savedRoles).map(([n,r]) => `${n}: ${r}`).join(', ')}
-                            </span>
-                          )}
+                          {savedRoles && Object.keys(savedRoles).length > 0 && ` · ${Object.entries(savedRoles).map(([name, role]) => `${name}: ${role}`).join(', ')}`}
                         </p>
-                        <p style={{ fontSize: 13, color: '#c8cde8', lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>{aiReport}</p>
+                        <p className="whitespace-pre-wrap text-sm leading-7 text-[#c8cde8]">{aiReport}</p>
                       </div>
                     )}
-                  </div>
+                    {!aiReport && !aiLoading && !aiError && <p className="mt-4 border-t border-[#1e2235] pt-4 text-sm text-[#737b9e]">Generate a report to get a BGMI-specific tactical breakdown for this team.</p>}
+                  </section>
                 </>
               )}
             </>
