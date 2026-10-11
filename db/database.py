@@ -424,6 +424,27 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_roster_profiles(self, guild_id: int) -> list[dict]:
+        rows = self._db.execute(
+            """
+            SELECT *
+            FROM roster_profiles
+            WHERE guild_id=?
+            ORDER BY upper(coalesce(approved_team_tag, team_tag, '')),
+                     upper(coalesce(approved_ign, ign))
+            """,
+            (guild_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def remove_roster_profile(self, guild_id: int, discord_user_id: int) -> bool:
+        cursor = self._db.execute(
+            "DELETE FROM roster_profiles WHERE guild_id=? AND discord_user_id=?",
+            (guild_id, discord_user_id),
+        )
+        self._db.commit()
+        return cursor.rowcount > 0
+
     def get_approved_roster_profile(
         self,
         guild_id: int,

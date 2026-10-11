@@ -17,6 +17,7 @@ Improvements over original:
 import asyncio
 import os
 import re
+import unicodedata
 from datetime import datetime
 
 import discord
@@ -39,6 +40,12 @@ from services.vision_parser import (
 )
 
 log = get_logger("discord_bot")
+
+
+def _normalize_player_ign(name: str) -> str:
+    normalized = unicodedata.normalize("NFKD", name).casefold()
+    return re.sub(r"[^a-z0-9]", "", normalized)
+
 
 # ── Intents ───────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -511,6 +518,80 @@ class RosterApprovalView(discord.ui.View):
         await self._review(interaction, "rejected")
 
 
+class RemoveRosterPlayerView(discord.ui.View):
+    def __init__(self, guild_id: int, admin_user_id: int, profile: dict):
+        super().__init__(timeout=60)
+        self.guild_id = guild_id
+        self.admin_user_id = admin_user_id
+        self.profile = profile
+        self.message: discord.Message | None = None
+
+    async def _authorize(self, interaction: discord.Interaction) -> bool:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if (
+            interaction.guild_id != self.guild_id
+            or interaction.user.id != self.admin_user_id
+            or not permissions
+            or not permissions.administrator
+        ):
+            await interaction.response.send_message(
+                "Only the administrator who started this removal can use these buttons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if not await self._authorize(interaction):
+            return
+        user_id = self.profile["discord_user_id"]
+        removed = db.remove_roster_profile(self.guild_id, user_id)
+        if not removed:
+            await interaction.response.edit_message(
+                content="That player is no longer on the roster.",
+                embed=None,
+                view=None,
+            )
+            return
+        await interaction.response.edit_message(
+            content=(
+                f"Removed {self.profile['_display_ign']} "
+                f"({self.profile['_display_uid']}) from the roster"
+            ),
+            embed=None,
+            view=None,
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if not await self._authorize(interaction):
+            return
+        await interaction.response.edit_message(
+            content="Roster removal cancelled.",
+            embed=None,
+            view=None,
+        )
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException as exc:
+                log.warning(f"Could not disable expired roster removal buttons: {exc}")
+
+
 class RosterEditModal(discord.ui.Modal, title="Edit Roster Submission"):
     uid_input = discord.ui.TextInput(
         label="UID",
@@ -927,6 +1008,163 @@ async def cmd_unset_roster_channel(ctx: commands.Context) -> None:
     await ctx.send(f"✅ `#{ctx.channel.name}` removed from roster registration.")
 
 
+def _match_roster_target(target: str, profiles: list[dict]) -> list[dict]:
+    target = target.strip()
+    if not target:
+        return []
+    mention = re.fullmatch(r"<@!?(\d+)>", target)
+    if mention:
+        user_id = int(mention.group(1))
+        return [
+            profile for profile in profiles
+            if profile["discord_user_id"] == user_id
+        ]
+
+    if target.isdigit():
+        value = int(target)
+        return [
+            profile for profile in profiles
+            if profile["discord_user_id"] == value
+            or target in {
+                str(profile.get("uid") or ""),
+                str(profile.get("approved_uid") or ""),
+            }
+        ]
+
+    folded_target = target.casefold()
+    return [
+        profile for profile in profiles
+        if any(
+            folded_target in str(name or "").casefold()
+            for name in (profile.get("ign"), profile.get("approved_ign"))
+        )
+    ]
+
+
+def _roster_removal_details(profile: dict) -> dict:
+    details = dict(profile)
+    has_approved = bool(profile.get("approved_uid"))
+    details["_display_ign"] = (
+        profile["approved_ign"] if has_approved else profile["ign"]
+    )
+    details["_display_uid"] = (
+        profile["approved_uid"] if has_approved else profile["uid"]
+    )
+    details["_display_team_tag"] = (
+        profile.get("approved_team_tag") if has_approved
+        else profile.get("team_tag")
+    ) or "Unassigned"
+    details["_display_role"] = (
+        profile.get("approved_role") if has_approved
+        else profile.get("role")
+    ) or "starter"
+    return details
+
+
+@bot.command(name="removeplayer")
+@commands.has_permissions(administrator=True)
+@commands.guild_only()
+async def cmd_remove_roster_player(
+    ctx: commands.Context,
+    *,
+    target: str,
+) -> None:
+    """Remove a roster profile after administrator confirmation."""
+    permissions = getattr(ctx.author, "guild_permissions", None)
+    if not permissions or not permissions.administrator:
+        await ctx.send("Only server administrators can remove roster players.")
+        return
+
+    matches = _match_roster_target(
+        target,
+        db.get_roster_profiles(ctx.guild.id),
+    )
+    if not matches:
+        await ctx.send(f"No roster player matched `{target.strip()}`.")
+        return
+    if len(matches) > 1:
+        lines = [
+            f"{index}. {profile.get('approved_ign') or profile['ign']} "
+            f"(`{profile.get('approved_uid') or profile['uid']}`) "
+            f"<@{profile['discord_user_id']}>"
+            for index, profile in enumerate(matches[:10], start=1)
+        ]
+        remaining = len(matches) - len(lines)
+        if remaining:
+            lines.append(f"…and {remaining} more.")
+        await ctx.send(
+            "Several roster players match. Please be more specific:\n"
+            + "\n".join(lines)
+        )
+        return
+
+    profile = _roster_removal_details(matches[0])
+    embed = discord.Embed(
+        title="Confirm roster player removal",
+        description="This removes the roster profile, including any pending re-submission. Match stats will be kept.",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="IGN", value=profile["_display_ign"], inline=True)
+    embed.add_field(name="UID", value=f"`{profile['_display_uid']}`", inline=True)
+    embed.add_field(
+        name="Team tag",
+        value=profile["_display_team_tag"],
+        inline=True,
+    )
+    embed.add_field(
+        name="Role",
+        value=profile["_display_role"].title(),
+        inline=True,
+    )
+    view = RemoveRosterPlayerView(
+        ctx.guild.id,
+        ctx.author.id,
+        profile,
+    )
+    view.message = await ctx.send(embed=embed, view=view)
+
+
+@bot.command(name="roster")
+@commands.guild_only()
+async def cmd_roster(ctx: commands.Context) -> None:
+    """List approved roster players grouped by team."""
+    players = db.get_approved_roster_profiles(ctx.guild.id)
+    if not players:
+        await ctx.send("No approved players are on the roster yet.")
+        return
+
+    teams: dict[str, dict[str, list[dict]]] = {}
+    for player in players:
+        team_tag = (player["team_tag"] or "Unassigned").strip().upper()
+        teams.setdefault(team_tag, {"starter": [], "substitute": []})
+        role = player["role"] if player["role"] in {"starter", "substitute"} else "starter"
+        teams[team_tag][role].append(player)
+
+    chunks: list[str] = []
+    current = ""
+    for team_tag, roles in teams.items():
+        lines = [f"**{team_tag}**"]
+        for role, label in (("starter", "Starters"), ("substitute", "Substitutes")):
+            if roles[role]:
+                lines.append(f"_{label}_")
+                lines.extend(
+                    f"• {player['ign']} — `{player['uid']}`"
+                    for player in roles[role]
+                )
+        for line in lines:
+            addition = f"\n{line}" if current else line
+            if current and len(current) + len(addition) > 1900:
+                chunks.append(current)
+                current = line
+            else:
+                current += addition
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        await ctx.send(chunk)
+
+
 @bot.command(name="showchannels")
 @commands.has_permissions(administrator=True)
 @commands.guild_only()
@@ -1069,6 +1307,7 @@ async def cmd_help(ctx: commands.Context) -> None:
         "`!unsetregchannel` — Remove this channel from registration\n"
         "`!setrosterchannel`   — Set this channel for profile screenshot registration\n"
         "`!unsetrosterchannel` — Remove this channel from roster registration\n"
+        "`!removeplayer <target>` — Remove a roster player after confirmation\n"
         "`!showchannels`    — Show configured channels\n"
         "`!clearslots`      — Clear all slots for this server\n"
         "`!status`          — Bot runtime status\n"
@@ -1077,6 +1316,7 @@ async def cmd_help(ctx: commands.Context) -> None:
     user = (
         "`!slots`           — Show current slot list\n"
         "`!team <name>`     — Find a team's slot\n"
+        "`!roster`          — List approved players grouped by team\n"
     )
     embed.add_field(name="🔐 Admin Only", value=admin, inline=False)
     embed.add_field(name="👥 Everyone",   value=user,  inline=False)
@@ -1203,10 +1443,23 @@ class StatsConfirmView(discord.ui.View):
         self.stop()
 
         try:
-            db.save_player_stats(self.records)
+            approved_igns = {
+                _normalize_player_ign(profile["ign"])
+                for profile in db.get_approved_roster_profiles(self.guild_id)
+                if profile.get("ign")
+            }
+            eligible_records = [
+                record for record in self.records
+                if _normalize_player_ign(record.get("player_name", "")) in approved_igns
+            ]
+            skipped_count = len(self.records) - len(eligible_records)
+            self.records = eligible_records
+            if eligible_records:
+                db.save_player_stats(eligible_records)
             db.mark_stats_processed(self.img_hash, self.guild_id)
             log.info(
-                f"Stats: saved {len(self.records)} players | "
+                f"Stats: saved {len(eligible_records)} rostered players, "
+                f"skipped {skipped_count} non-rostered players | "
                 f"{self._place_str} {self._map_name} | "
                 f"guild={self.guild_id} | hash={self.img_hash[:12]}"
             )
@@ -1216,6 +1469,32 @@ class StatsConfirmView(discord.ui.View):
                 await interaction.response.edit_message(
                     content="❌ DB save failed — check logs.", view=None
                 )
+            return
+
+        if not eligible_records:
+            if interaction:
+                await interaction.response.edit_message(
+                    content=(
+                        "No parsed players matched the approved roster. "
+                        "No stats were saved."
+                    ),
+                    embed=None,
+                    view=None,
+                )
+            else:
+                try:
+                    await self._bot_msg.edit(
+                        content=(
+                            "No parsed players matched the approved roster. "
+                            "No stats were saved."
+                        ),
+                        embed=None,
+                        view=None,
+                )
+                except discord.HTTPException as exc:
+                    log.warning(
+                        f"Could not update stats message after roster filtering: {exc}"
+                    )
             return
 
         embed = _build_stats_embed(self.records, saved=True)
