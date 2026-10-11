@@ -32,7 +32,10 @@ from state import state
 from utils.logger import get_logger
 from utils.image_preprocessing import preprocess, hash_image
 from services.ocr_service import ocr_service
-from services.vision_parser import parse_screenshot_vision as parse_screenshot
+from services.vision_parser import (
+    parse_profile_screenshot_vision,
+    parse_screenshot_vision as parse_screenshot,
+)
 
 log = get_logger("discord_bot")
 
@@ -176,6 +179,16 @@ async def on_message(message: discord.Message) -> None:
     guild_name  = message.guild.name
     content     = message.content
 
+    # ── 0. Roster profile screenshot registration ────────────────────────
+    if gs.is_roster_channel(channel_id) and message.attachments:
+        for attachment in message.attachments:
+            content_type = (getattr(attachment, "content_type", "") or "").lower()
+            filename = (attachment.filename or "").lower()
+            if content_type.startswith("image/") or filename.endswith(
+                (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+            ):
+                await _handle_roster_screenshot(message, attachment)
+
     # ── 1. IDP Detection ─────────────────────────────────────────────────
     if gs.should_scan_for_idp(channel_id):
         idp = extract_idp(content)
@@ -231,6 +244,149 @@ async def on_message(message: discord.Message) -> None:
             break
 
     await bot.process_commands(message)
+
+
+class RosterApprovalView(discord.ui.View):
+    def __init__(self, guild_id: int, discord_user_id: int):
+        super().__init__(timeout=24 * 60 * 60)
+        self.guild_id = guild_id
+        self.discord_user_id = discord_user_id
+
+    async def _review(
+        self,
+        interaction: discord.Interaction,
+        status: str,
+    ) -> None:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if not permissions or not permissions.administrator:
+            await interaction.response.send_message(
+                "Only server administrators can review roster registrations.",
+                ephemeral=True,
+            )
+            return
+        if interaction.guild_id != self.guild_id:
+            await interaction.response.send_message(
+                "This roster review belongs to a different server.",
+                ephemeral=True,
+            )
+            return
+
+        profile = db.get_roster_profile(self.guild_id, self.discord_user_id)
+        if not profile or profile["status"] != "pending":
+            await interaction.response.send_message(
+                "This roster submission is no longer pending review.",
+                ephemeral=True,
+            )
+            return
+
+        reviewed = db.review_roster_profile(
+            self.guild_id,
+            self.discord_user_id,
+            status,
+        )
+        if not reviewed:
+            await interaction.response.send_message(
+                "The roster submission could not be found.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title="Roster registration approved"
+            if status == "approved"
+            else "Roster registration rejected",
+            color=discord.Color.green()
+            if status == "approved"
+            else discord.Color.red(),
+        )
+        embed.add_field(name="Discord user", value=reviewed["discord_display_name"])
+        embed.add_field(name="UID", value=f"`{reviewed['uid']}`", inline=True)
+        embed.add_field(name="IGN", value=reviewed["ign"], inline=True)
+        embed.set_footer(text=f"Reviewed by {interaction.user}")
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
+    async def approve(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await self._review(interaction, "approved")
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger)
+    async def reject(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await self._review(interaction, "rejected")
+
+
+async def _handle_roster_screenshot(
+    message: discord.Message,
+    attachment: discord.Attachment,
+) -> None:
+    try:
+        raw_bytes = await attachment.read()
+        profile = await parse_profile_screenshot_vision(raw_bytes)
+    except Exception as exc:
+        log.error(
+            f"Roster: profile screenshot parsing failed | "
+            f"guild={message.guild.id} | file={attachment.filename} | error={exc}"
+        )
+        await message.channel.send(
+            "❌ I couldn't read that profile screenshot. Please try again."
+        )
+        return
+
+    uid = profile.get("UID", "").strip()
+    ign = profile.get("IGN", "").strip()
+    if not uid or not ign:
+        await message.channel.send(
+            "⚠️ I couldn't clearly read the UID or IGN. Please upload a clearer "
+            "BGMI profile screenshot showing both."
+        )
+        return
+    if not uid.isdigit():
+        await message.channel.send(
+            "⚠️ The UID wasn't readable as digits. Please upload a clearer "
+            "BGMI profile screenshot."
+        )
+        return
+
+    discord_user_id = message.author.id
+    display_name = getattr(message.author, "display_name", str(message.author))
+    try:
+        submission = db.submit_roster_profile(
+            guild_id=message.guild.id,
+            discord_user_id=discord_user_id,
+            discord_display_name=display_name,
+            uid=uid,
+            ign=ign,
+        )
+    except Exception as exc:
+        log.error(
+            f"Roster: could not save submission | "
+            f"guild={message.guild.id} | user={discord_user_id} | error={exc}"
+        )
+        await message.channel.send(
+            "❌ I couldn't save this roster submission. Please try again later."
+        )
+        return
+
+    embed = discord.Embed(
+        title="Roster registration pending approval",
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Discord user", value=display_name, inline=False)
+    embed.add_field(name="UID", value=f"`{uid}`", inline=True)
+    embed.add_field(name="IGN", value=ign, inline=True)
+    embed.set_footer(text=f"Submission status: {submission['status']}")
+    await message.channel.send(
+        embed=embed,
+        view=RosterApprovalView(message.guild.id, discord_user_id),
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════

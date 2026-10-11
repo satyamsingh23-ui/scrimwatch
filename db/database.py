@@ -106,6 +106,30 @@ CREATE TABLE IF NOT EXISTS roster_channels (
     PRIMARY KEY (guild_id, channel_id)
 );
 
+CREATE TABLE IF NOT EXISTS roster_profiles (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id              INTEGER NOT NULL,
+    discord_user_id       INTEGER NOT NULL,
+    discord_display_name  TEXT NOT NULL,
+    uid                   TEXT NOT NULL,
+    ign                   TEXT NOT NULL,
+    team_tag              TEXT,
+    role                  TEXT NOT NULL DEFAULT 'starter'
+                              CHECK(role IN ('starter', 'substitute')),
+    status                TEXT NOT NULL DEFAULT 'pending'
+                              CHECK(status IN ('pending', 'approved', 'rejected')),
+    approved_uid          TEXT,
+    approved_ign          TEXT,
+    approved_team_tag     TEXT,
+    approved_role         TEXT
+                              CHECK(approved_role IN ('starter', 'substitute')
+                                    OR approved_role IS NULL),
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    reviewed_at           TEXT,
+    UNIQUE (guild_id, discord_user_id)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -313,6 +337,116 @@ class Database:
             (guild_id,),
         ).fetchall()
         return {row["channel_id"] for row in rows}
+
+    def submit_roster_profile(
+        self,
+        *,
+        guild_id: int,
+        discord_user_id: int,
+        discord_display_name: str,
+        uid: str,
+        ign: str,
+        team_tag: str | None = None,
+        role: str = "starter",
+    ) -> dict:
+        """Create or replace a pending submission without changing approved data."""
+        self._db.execute(
+            """
+            INSERT INTO roster_profiles (
+                guild_id, discord_user_id, discord_display_name,
+                uid, ign, team_tag, role, status, created_at, updated_at,
+                reviewed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'),
+                      datetime('now'), NULL)
+            ON CONFLICT(guild_id, discord_user_id) DO UPDATE SET
+                discord_display_name=excluded.discord_display_name,
+                uid=excluded.uid,
+                ign=excluded.ign,
+                team_tag=excluded.team_tag,
+                role=excluded.role,
+                status='pending',
+                updated_at=datetime('now'),
+                reviewed_at=NULL
+            """,
+            (
+                guild_id,
+                discord_user_id,
+                discord_display_name,
+                uid,
+                ign,
+                team_tag,
+                role,
+            ),
+        )
+        self._db.commit()
+        return self.get_roster_profile(guild_id, discord_user_id)
+
+    def get_roster_profile(self, guild_id: int, discord_user_id: int) -> dict | None:
+        row = self._db.execute(
+            """
+            SELECT * FROM roster_profiles
+            WHERE guild_id=? AND discord_user_id=?
+            """,
+            (guild_id, discord_user_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_approved_roster_profile(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+    ) -> dict | None:
+        """Return the currently live approved values, even during re-review."""
+        row = self._db.execute(
+            """
+            SELECT guild_id, discord_user_id, discord_display_name,
+                   approved_uid AS uid, approved_ign AS ign,
+                   approved_team_tag AS team_tag, approved_role AS role
+            FROM roster_profiles
+            WHERE guild_id=? AND discord_user_id=? AND approved_uid IS NOT NULL
+            """,
+            (guild_id, discord_user_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def review_roster_profile(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+        status: str,
+    ) -> dict | None:
+        """Approve the pending submission or reject it, preserving the live profile."""
+        if status not in {"approved", "rejected"}:
+            raise ValueError(f"Unsupported roster review status: {status}")
+
+        if status == "approved":
+            self._db.execute(
+                """
+                UPDATE roster_profiles
+                SET status='approved',
+                    approved_uid=uid,
+                    approved_ign=ign,
+                    approved_team_tag=team_tag,
+                    approved_role=role,
+                    updated_at=datetime('now'),
+                    reviewed_at=datetime('now')
+                WHERE guild_id=? AND discord_user_id=?
+                """,
+                (guild_id, discord_user_id),
+            )
+        else:
+            self._db.execute(
+                """
+                UPDATE roster_profiles
+                SET status='rejected',
+                    updated_at=datetime('now'),
+                    reviewed_at=datetime('now')
+                WHERE guild_id=? AND discord_user_id=?
+                """,
+                (guild_id, discord_user_id),
+            )
+        self._db.commit()
+        return self.get_roster_profile(guild_id, discord_user_id)
 
     # ── IDP History ───────────────────────────────────────────────────────
 
