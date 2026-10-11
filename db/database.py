@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS roster_profiles (
     team_tag              TEXT,
     role                  TEXT NOT NULL DEFAULT 'starter'
                               CHECK(role IN ('starter', 'substitute')),
+    manually_edited       INTEGER NOT NULL DEFAULT 0,
     status                TEXT NOT NULL DEFAULT 'pending'
                               CHECK(status IN ('pending', 'approved', 'rejected')),
     approved_uid          TEXT,
@@ -178,6 +179,17 @@ class Database:
                 log.info(f"DB migrated: added column player_stats.{col}")
             except Exception:
                 pass  # column already exists
+        roster_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(roster_profiles)")
+        }
+        if "manually_edited" not in roster_columns:
+            self._conn.execute(
+                "ALTER TABLE roster_profiles "
+                "ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0"
+            )
+            self._conn.commit()
+            log.info("DB migrated: added column roster_profiles.manually_edited")
         log.info(f"Database connected: {self._path}")
 
     def close(self) -> None:
@@ -355,9 +367,9 @@ class Database:
             INSERT INTO roster_profiles (
                 guild_id, discord_user_id, discord_display_name,
                 uid, ign, team_tag, role, status, created_at, updated_at,
-                reviewed_at
+                manually_edited, reviewed_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'),
-                      datetime('now'), NULL)
+                      datetime('now'), 0, NULL)
             ON CONFLICT(guild_id, discord_user_id) DO UPDATE SET
                 discord_display_name=excluded.discord_display_name,
                 uid=excluded.uid,
@@ -365,6 +377,7 @@ class Database:
                 team_tag=excluded.team_tag,
                 role=excluded.role,
                 status='pending',
+                manually_edited=0,
                 updated_at=datetime('now'),
                 reviewed_at=NULL
             """,
@@ -408,6 +421,27 @@ class Database:
             (guild_id, discord_user_id),
         ).fetchone()
         return dict(row) if row else None
+
+    def edit_pending_roster_profile(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+        uid: str,
+        ign: str,
+    ) -> dict | None:
+        """Update only the pending submission; approved values remain untouched."""
+        cursor = self._db.execute(
+            """
+            UPDATE roster_profiles
+            SET uid=?, ign=?, manually_edited=1, updated_at=datetime('now')
+            WHERE guild_id=? AND discord_user_id=? AND status='pending'
+            """,
+            (uid, ign, guild_id, discord_user_id),
+        )
+        self._db.commit()
+        if not cursor.rowcount:
+            return None
+        return self.get_roster_profile(guild_id, discord_user_id)
 
     def review_roster_profile(
         self,

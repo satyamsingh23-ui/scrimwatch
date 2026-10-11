@@ -305,6 +305,40 @@ class RosterApprovalView(discord.ui.View):
         embed.set_footer(text=f"Reviewed by {interaction.user}")
         await interaction.response.edit_message(embed=embed, view=None)
 
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.secondary)
+    async def edit(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        is_admin = bool(permissions and permissions.administrator)
+        is_submitter = interaction.user.id == self.discord_user_id
+        if interaction.guild_id != self.guild_id or not (is_admin or is_submitter):
+            await interaction.response.send_message(
+                "Only an administrator or the player who submitted this entry can edit it.",
+                ephemeral=True,
+            )
+            return
+
+        profile = db.get_roster_profile(self.guild_id, self.discord_user_id)
+        if not profile or profile["status"] != "pending":
+            await interaction.response.send_message(
+                "This roster submission is no longer pending review.",
+                ephemeral=True,
+            )
+            return
+        if interaction.message is None:
+            await interaction.response.send_message(
+                "The roster review message is no longer available.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(
+            RosterEditModal(profile, self, interaction.message)
+        )
+
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
     async def approve(
         self,
@@ -320,6 +354,115 @@ class RosterApprovalView(discord.ui.View):
         button: discord.ui.Button,
     ) -> None:
         await self._review(interaction, "rejected")
+
+
+class RosterEditModal(discord.ui.Modal, title="Edit Roster Submission"):
+    uid_input = discord.ui.TextInput(
+        label="UID",
+        placeholder="Digits only",
+        max_length=32,
+        required=True,
+    )
+    ign_input = discord.ui.TextInput(
+        label="IGN",
+        placeholder="Exact in-game name, including clan tag",
+        max_length=100,
+        required=True,
+    )
+
+    def __init__(
+        self,
+        profile: dict,
+        view: RosterApprovalView,
+        message: discord.Message,
+    ):
+        super().__init__()
+        self.uid_input.default = profile["uid"]
+        self.ign_input.default = profile["ign"]
+        self._view = view
+        self._message = message
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        is_admin = bool(permissions and permissions.administrator)
+        is_submitter = interaction.user.id == self._view.discord_user_id
+        if (
+            interaction.guild_id != self._view.guild_id
+            or not (is_admin or is_submitter)
+        ):
+            await interaction.response.send_message(
+                "Only an administrator or the player who submitted this entry can edit it.",
+                ephemeral=True,
+            )
+            return
+
+        uid = "".join(self.uid_input.value.split())
+        ign = self.ign_input.value.strip()
+        if not uid.isdigit():
+            await interaction.response.send_message(
+                "UID must contain digits only.",
+                ephemeral=True,
+            )
+            return
+        if not ign:
+            await interaction.response.send_message(
+                "IGN cannot be empty.",
+                ephemeral=True,
+            )
+            return
+
+        profile = db.edit_pending_roster_profile(
+            self._view.guild_id,
+            self._view.discord_user_id,
+            uid,
+            ign,
+        )
+        if not profile:
+            await interaction.response.send_message(
+                "This roster submission is no longer pending review.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        embed = _build_roster_pending_embed(profile)
+        try:
+            await self._message.edit(embed=embed, view=self._view)
+        except discord.HTTPException as exc:
+            log.error(
+                f"Roster: could not refresh edited review card | "
+                f"guild={self._view.guild_id} | "
+                f"user={self._view.discord_user_id} | error={exc}"
+            )
+            await interaction.followup.send(
+                "The roster entry was saved, but I couldn't refresh its review card.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            "Roster submission updated and remains pending approval.",
+            ephemeral=True,
+        )
+
+
+def _build_roster_pending_embed(profile: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="Roster registration pending approval",
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(
+        name="Discord user",
+        value=profile["discord_display_name"],
+        inline=False,
+    )
+    embed.add_field(name="UID", value=f"`{profile['uid']}`", inline=True)
+    embed.add_field(name="IGN", value=profile["ign"], inline=True)
+    if profile.get("manually_edited"):
+        embed.set_footer(text="Manually edited • Submission status: pending")
+    else:
+        embed.set_footer(text=f"Submission status: {profile['status']}")
+    return embed
 
 
 async def _handle_roster_screenshot(
@@ -374,15 +517,7 @@ async def _handle_roster_screenshot(
         )
         return
 
-    embed = discord.Embed(
-        title="Roster registration pending approval",
-        color=discord.Color.gold(),
-        timestamp=datetime.utcnow(),
-    )
-    embed.add_field(name="Discord user", value=display_name, inline=False)
-    embed.add_field(name="UID", value=f"`{uid}`", inline=True)
-    embed.add_field(name="IGN", value=ign, inline=True)
-    embed.set_footer(text=f"Submission status: {submission['status']}")
+    embed = _build_roster_pending_embed(submission)
     await message.channel.send(
         embed=embed,
         view=RosterApprovalView(message.guild.id, discord_user_id),
