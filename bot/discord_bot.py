@@ -83,6 +83,8 @@ async def on_ready() -> None:
     # Pre-load guild state from DB for all known guilds
     guild_manager.preload([g.id for g in bot.guilds])
 
+    await _backfill_roster_usernames()
+
     state.mark_started(pid=os.getpid(), server_count=guild_count)
 
     # Start background workers
@@ -90,6 +92,33 @@ async def on_ready() -> None:
     _daily_prune.start()
 
     log.info("All systems up. Monitoring active.")
+
+
+async def _backfill_roster_usernames() -> None:
+    for discord_user_id in db.get_approved_roster_users_missing_username():
+        try:
+            user = await bot.fetch_user(discord_user_id)
+        except discord.NotFound:
+            log.info(
+                f"Roster username backfill skipped: Discord user "
+                f"{discord_user_id} not found."
+            )
+            continue
+        except discord.HTTPException as exc:
+            log.warning(
+                f"Roster username backfill failed for {discord_user_id}: {exc}"
+            )
+            continue
+
+        updated = db.backfill_approved_roster_username(
+            discord_user_id,
+            user.name,
+        )
+        if updated:
+            log.info(
+                f"Roster username backfilled for {updated} approved row(s) "
+                f"for Discord user {discord_user_id}."
+            )
 
 
 @bot.event
@@ -374,7 +403,20 @@ class RosterApprovalView(discord.ui.View):
             if status == "approved"
             else discord.Color.red(),
         )
-        embed.add_field(name="Discord user", value=reviewed["discord_display_name"])
+        embed.add_field(
+            name="Discord identity",
+            value=(
+                f"ID: `{reviewed['discord_user_id']}`\n"
+                f"Username: `{reviewed['discord_username'] or 'Unknown'}`\n"
+                f"Mention: <@{reviewed['discord_user_id']}>"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Display name",
+            value=reviewed["discord_display_name"],
+            inline=False,
+        )
         embed.add_field(name="UID", value=f"`{reviewed['uid']}`", inline=True)
         embed.add_field(name="IGN", value=reviewed["ign"], inline=True)
         embed.set_footer(text=f"Reviewed by {interaction.user}")
@@ -626,7 +668,16 @@ def _build_roster_pending_embed(profile: dict) -> discord.Embed:
         timestamp=datetime.utcnow(),
     )
     embed.add_field(
-        name="Discord user",
+        name="Discord identity",
+        value=(
+            f"ID: `{profile['discord_user_id']}`\n"
+            f"Username: `{profile.get('discord_username') or 'Unknown'}`\n"
+            f"Mention: <@{profile['discord_user_id']}>"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Display name",
         value=profile["discord_display_name"],
         inline=False,
     )
@@ -678,11 +729,13 @@ async def _handle_roster_screenshot(
         return
 
     discord_user_id = message.author.id
+    discord_username = message.author.name
     display_name = getattr(message.author, "display_name", str(message.author))
     try:
         submission = db.submit_roster_profile(
             guild_id=message.guild.id,
             discord_user_id=discord_user_id,
+            discord_username=discord_username,
             discord_display_name=display_name,
             uid=uid,
             ign=ign,

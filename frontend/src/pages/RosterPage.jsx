@@ -20,7 +20,12 @@ function safeSet(key, value) {
   }
 }
 
-function PlayerRow({ player, isStarter, onCopyUid, copiedUid }) {
+function PlayerRow({
+  player,
+  isStarter,
+  onCopy,
+  copiedValue,
+}) {
   return (
     <div className="flex flex-col gap-3 border-b border-[#1e2235] py-3 last:border-0 sm:flex-row sm:items-center">
       <div className="min-w-0 flex-1">
@@ -38,27 +43,39 @@ function PlayerRow({ player, isStarter, onCopyUid, copiedUid }) {
           <span className="inline-flex items-center gap-1 font-mono text-[#c8cde8]">
             {player.uid}
           </span>
-          <span className="truncate">{player.discord_name}</span>
+          <span className="truncate text-[#c8cde8]">{player.discord_username || 'Unknown username'}</span>
+          <span className="font-mono text-[#77809f]">ID {player.discord_id}</span>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={() => onCopyUid(player.uid)}
-        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-[#29304a] bg-[#0b0d17] px-2.5 py-1.5 text-xs text-[#aeb5d2] transition hover:border-cyan-400/40 hover:text-cyan-300"
-        aria-label={`Copy UID for ${player.ign}`}
-      >
-        {copiedUid === player.uid ? <Check size={14} /> : <Copy size={14} />}
-        {copiedUid === player.uid ? 'Copied' : 'Copy UID'}
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => onCopy(player.uid, `uid:${player.uid}`)}
+          className="inline-flex w-fit items-center gap-1.5 rounded-md border border-[#29304a] bg-[#0b0d17] px-2.5 py-1.5 text-xs text-[#aeb5d2] transition hover:border-cyan-400/40 hover:text-cyan-300"
+          aria-label={`Copy UID for ${player.ign}`}
+        >
+          {copiedValue === `uid:${player.uid}` ? <Check size={14} /> : <Copy size={14} />}
+          {copiedValue === `uid:${player.uid}` ? 'Copied' : 'Copy UID'}
+        </button>
+        <button
+          type="button"
+          onClick={() => onCopy(player.discord_id, `discord:${player.discord_id}`)}
+          className="inline-flex w-fit items-center gap-1.5 rounded-md border border-[#29304a] bg-[#0b0d17] px-2.5 py-1.5 text-xs text-[#aeb5d2] transition hover:border-cyan-400/40 hover:text-cyan-300"
+          aria-label={`Copy Discord ID for ${player.discord_username || player.discord_name}`}
+        >
+          {copiedValue === `discord:${player.discord_id}` ? <Check size={14} /> : <Copy size={14} />}
+          {copiedValue === `discord:${player.discord_id}` ? 'Copied ID' : 'Copy Discord ID'}
+        </button>
+      </div>
     </div>
   )
 }
 
-function TeamCard({ team, onCopyUid, copiedUid, onCopyTeam, copiedTeam }) {
+function TeamCard({ team, onCopy, copiedValue, onCopyTeam }) {
   const starters = team.players.filter(player => player.role === 'starter')
   const substitutes = team.players.filter(player => player.role === 'substitute')
   const copyText = [...starters, ...substitutes]
-    .map(player => `${player.ign} - ${player.uid} - ${player.discord_name}`)
+    .map(player => `${player.ign} - ${player.uid} - ${player.discord_username || 'Unknown'} - ${player.discord_id}`)
     .join('\n')
 
   return (
@@ -78,8 +95,8 @@ function TeamCard({ team, onCopyUid, copiedUid, onCopyTeam, copiedTeam }) {
           onClick={() => onCopyTeam(team.team_tag, copyText)}
           className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-400/15"
         >
-          {copiedTeam === team.team_tag ? <Check size={14} /> : <Clipboard size={14} />}
-          {copiedTeam === team.team_tag ? 'Copied team' : 'Copy team'}
+          {copiedValue === `team:${team.team_tag}` ? <Check size={14} /> : <Clipboard size={14} />}
+          {copiedValue === `team:${team.team_tag}` ? 'Copied team' : 'Copy team'}
         </button>
       </header>
 
@@ -91,8 +108,8 @@ function TeamCard({ team, onCopyUid, copiedUid, onCopyTeam, copiedTeam }) {
               key={`${player.uid}-${player.ign}-${index}`}
               player={player}
               isStarter
-              onCopyUid={onCopyUid}
-              copiedUid={copiedUid}
+              onCopy={onCopy}
+              copiedValue={copiedValue}
             />
           )) : <p className="py-2 text-xs text-[#626a8b]">No starters approved</p>}
         </div>
@@ -105,8 +122,8 @@ function TeamCard({ team, onCopyUid, copiedUid, onCopyTeam, copiedTeam }) {
                 key={`${player.uid}-${player.ign}-${index}`}
                 player={player}
                 isStarter={false}
-                onCopyUid={onCopyUid}
-                copiedUid={copiedUid}
+                onCopy={onCopy}
+                copiedValue={copiedValue}
               />
             ))}
           </div>
@@ -123,8 +140,7 @@ export default function RosterPage() {
   const [loading, setLoading] = useState(Boolean(guildId))
   const [error, setError] = useState('')
   const [copyError, setCopyError] = useState('')
-  const [copiedUid, setCopiedUid] = useState('')
-  const [copiedTeam, setCopiedTeam] = useState('')
+  const [copiedValue, setCopiedValue] = useState('')
 
   const loadRoster = useCallback(async () => {
     if (!guildId) {
@@ -157,10 +173,10 @@ export default function RosterPage() {
     setGuildId(value)
   }
 
-  async function copyText(text, copiedValue, setCopiedValue) {
+  async function copyText(text, copiedKey) {
     try {
       await navigator.clipboard.writeText(text)
-      setCopiedValue(copiedValue)
+      setCopiedValue(copiedKey)
       setCopyError('')
       window.setTimeout(() => setCopiedValue(''), 1600)
     } catch {
@@ -241,10 +257,9 @@ export default function RosterPage() {
             <TeamCard
               key={team.team_tag}
               team={team}
-              copiedUid={copiedUid}
-              copiedTeam={copiedTeam}
-              onCopyUid={uid => copyText(uid, uid, setCopiedUid)}
-              onCopyTeam={(tag, text) => copyText(text, tag, setCopiedTeam)}
+              copiedValue={copiedValue}
+              onCopy={(text, key) => copyText(text, key)}
+              onCopyTeam={(tag, text) => copyText(text, `team:${tag}`)}
             />
           ))}
         </div>

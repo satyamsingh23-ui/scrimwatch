@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,7 +74,11 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         self.channel = _Channel()
         self.message = SimpleNamespace(
             guild=SimpleNamespace(id=self.guild_id, name="Test Guild"),
-            author=SimpleNamespace(id=self.user_id, display_name="Player One"),
+            author=SimpleNamespace(
+                id=self.user_id,
+                name="global_player",
+                display_name="Player One",
+            ),
             channel=SimpleNamespace(
                 id=24680,
                 name="roster",
@@ -91,6 +96,7 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         return self.database.submit_roster_profile(
             guild_id=self.guild_id,
             discord_user_id=self.user_id,
+            discord_username="global_player",
             discord_display_name="Player One",
             uid="5123456789",
             ign="[ABC] Player",
@@ -136,7 +142,11 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["status"], "pending")
         self.assertEqual(updated["manually_edited"], 1)
         self.assertEqual(message.edited["view"], view)
-        self.assertIn("9876543210", message.edited["embed"].fields[1].value)
+        uid_field = next(
+            field for field in message.edited["embed"].fields
+            if field.name == "UID"
+        )
+        self.assertIn("9876543210", uid_field.value)
         self.assertEqual(interaction.followup.sent[0][0], "Roster submission updated and remains pending approval.")
 
     async def test_team_tag_detection_examples(self):
@@ -150,6 +160,7 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
             profile = self.database.submit_roster_profile(
                 guild_id=self.guild_id,
                 discord_user_id=user_id,
+                discord_username=f"user{user_id}",
                 discord_display_name=f"Player {user_id}",
                 uid=str(user_id),
                 ign=ign,
@@ -198,7 +209,8 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_roster_endpoint_groups_approved_players_with_starters_first(self):
         starter = self.database.submit_roster_profile(
             guild_id=self.guild_id,
-            discord_user_id=1,
+            discord_user_id=9007199254740993,
+            discord_username="starter_user",
             discord_display_name="Starter",
             uid="111111",
             ign="HLS_One",
@@ -207,6 +219,7 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         substitute = self.database.submit_roster_profile(
             guild_id=self.guild_id,
             discord_user_id=2,
+            discord_username="sub_user",
             discord_display_name="Sub",
             uid="222222",
             ign="[HLS] Two",
@@ -220,13 +233,14 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         )
         self.database.submit_roster_profile(
             guild_id=self.guild_id,
-            discord_user_id=1,
+            discord_user_id=9007199254740993,
+            discord_username="starter_user",
             discord_display_name="Starter",
             uid="999999",
             ign="[OTHER] New IGN",
         )
         self.database.review_roster_profile(
-            self.guild_id, 1, "rejected"
+            self.guild_id, 9007199254740993, "rejected"
         )
         pending = self.database.submit_roster_profile(
             guild_id=self.guild_id,
@@ -258,12 +272,16 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
                             {
                                 "ign": "HLS_One",
                                 "uid": "111111",
+                                "discord_id": "9007199254740993",
+                                "discord_username": "starter_user",
                                 "discord_name": "Starter",
                                 "role": "starter",
                             },
                             {
                                 "ign": "[HLS] Two",
                                 "uid": "222222",
+                                "discord_id": "2",
+                                "discord_username": "sub_user",
                                 "discord_name": "Sub",
                                 "role": "substitute",
                             },
@@ -271,6 +289,10 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
                     }
                 ]
             },
+        )
+        self.assertIsInstance(
+            response.json()["teams"][0]["players"][0]["discord_id"],
+            str,
         )
 
     async def test_submitter_can_edit_own_pending_profile(self):
@@ -331,6 +353,7 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         profile = self.database.submit_roster_profile(
             guild_id=self.guild_id,
             discord_user_id=self.user_id,
+            discord_username="global_player",
             discord_display_name="Player One",
             uid="1111111111",
             ign="[PENDING] Update",
@@ -386,6 +409,7 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first_submission["status"], "pending")
             self.assertEqual(first_submission["role"], "starter")
             self.assertEqual(first_submission["uid"], "5123456789")
+            self.assertEqual(first_submission["discord_username"], "global_player")
             self.assertEqual(parse_result.await_count, 1)
 
             first_view = self.channel.sent[-1]["view"]
@@ -459,6 +483,76 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
                 )["uid"],
                 "5987654321",
             )
+
+    async def test_discord_username_is_saved_on_screenshot_submission(self):
+        with (
+            patch.object(discord_bot, "db", self.database),
+            patch.object(
+                discord_bot,
+                "parse_profile_screenshot_vision",
+                new=AsyncMock(
+                    return_value={"UID": "123456789", "IGN": "HLS_Player"}
+                ),
+            ),
+        ):
+            await discord_bot._handle_roster_screenshot(self.message, _Attachment())
+        profile = self.database.get_roster_profile(self.guild_id, self.user_id)
+        self.assertEqual(profile["discord_username"], "global_player")
+
+    async def test_database_migrates_existing_roster_table(self):
+        legacy_path = Path(self.temp_dir.name) / "legacy.db"
+        connection = sqlite3.connect(legacy_path)
+        connection.execute(
+            """
+            CREATE TABLE roster_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                discord_user_id INTEGER NOT NULL,
+                discord_display_name TEXT NOT NULL,
+                uid TEXT NOT NULL,
+                ign TEXT NOT NULL,
+                team_tag TEXT,
+                role TEXT NOT NULL DEFAULT 'starter',
+                manually_edited INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                approved_uid TEXT,
+                approved_ign TEXT,
+                approved_team_tag TEXT,
+                approved_role TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                reviewed_at TEXT,
+                UNIQUE (guild_id, discord_user_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO roster_profiles
+                (guild_id, discord_user_id, discord_display_name, uid, ign,
+                 status, approved_uid, approved_ign)
+            VALUES (1, 2, 'Legacy Player', '1234', 'Legacy',
+                    'approved', '1234', 'Legacy')
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = Database(str(legacy_path))
+        migrated.connect()
+        try:
+            columns = {
+                row["name"]
+                for row in migrated._db.execute(
+                    "PRAGMA table_info(roster_profiles)"
+                )
+            }
+            self.assertIn("discord_username", columns)
+            profile = migrated.get_roster_profile(1, 2)
+            self.assertIsNone(profile["discord_username"])
+            self.assertEqual(profile["approved_uid"], "1234")
+        finally:
+            migrated.close()
 
 
 if __name__ == "__main__":

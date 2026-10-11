@@ -77,6 +77,8 @@ async def get_roster(guild_id: int):
             {
                 "ign": profile["ign"],
                 "uid": profile["uid"],
+                "discord_id": profile["discord_id"],
+                "discord_username": profile["discord_username"],
                 "discord_name": profile["discord_name"],
                 "role": profile["role"],
             }

@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS roster_profiles (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id              INTEGER NOT NULL,
     discord_user_id       INTEGER NOT NULL,
+    discord_username      TEXT,
     discord_display_name  TEXT NOT NULL,
     uid                   TEXT NOT NULL,
     ign                   TEXT NOT NULL,
@@ -191,6 +192,12 @@ class Database:
             )
             self._conn.commit()
             log.info("DB migrated: added column roster_profiles.manually_edited")
+        if "discord_username" not in roster_columns:
+            self._conn.execute(
+                "ALTER TABLE roster_profiles ADD COLUMN discord_username TEXT"
+            )
+            self._conn.commit()
+            log.info("DB migrated: added column roster_profiles.discord_username")
         log.info(f"Database connected: {self._path}")
 
     def close(self) -> None:
@@ -361,6 +368,7 @@ class Database:
         ign: str,
         team_tag: str | None = None,
         role: str = "starter",
+        discord_username: str | None = None,
     ) -> dict:
         """Create or replace a pending submission without changing approved data."""
         if role not in {"starter", "substitute"}:
@@ -372,12 +380,16 @@ class Database:
         self._db.execute(
             """
             INSERT INTO roster_profiles (
-                guild_id, discord_user_id, discord_display_name,
+                guild_id, discord_user_id, discord_username, discord_display_name,
                 uid, ign, team_tag, role, status, created_at, updated_at,
                 manually_edited, reviewed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'),
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'),
                       datetime('now'), 0, NULL)
             ON CONFLICT(guild_id, discord_user_id) DO UPDATE SET
+                discord_username=COALESCE(
+                    NULLIF(excluded.discord_username, ''),
+                    roster_profiles.discord_username
+                ),
                 discord_display_name=excluded.discord_display_name,
                 uid=excluded.uid,
                 ign=excluded.ign,
@@ -391,6 +403,7 @@ class Database:
             (
                 guild_id,
                 discord_user_id,
+                discord_username,
                 discord_display_name,
                 uid,
                 ign,
@@ -502,7 +515,9 @@ class Database:
     def get_approved_roster_profiles(self, guild_id: int) -> list[dict]:
         rows = self._db.execute(
             """
-            SELECT discord_display_name AS discord_name,
+            SELECT CAST(discord_user_id AS TEXT) AS discord_id,
+                   discord_username,
+                   discord_display_name AS discord_name,
                    approved_uid AS uid,
                    approved_ign AS ign,
                    approved_team_tag AS team_tag,
@@ -516,6 +531,35 @@ class Database:
             (guild_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_approved_roster_users_missing_username(self) -> list[int]:
+        rows = self._db.execute(
+            """
+            SELECT DISTINCT discord_user_id
+            FROM roster_profiles
+            WHERE approved_uid IS NOT NULL
+              AND (discord_username IS NULL OR discord_username='')
+            """
+        ).fetchall()
+        return [row["discord_user_id"] for row in rows]
+
+    def backfill_approved_roster_username(
+        self,
+        discord_user_id: int,
+        discord_username: str,
+    ) -> int:
+        cursor = self._db.execute(
+            """
+            UPDATE roster_profiles
+            SET discord_username=?, updated_at=datetime('now')
+            WHERE discord_user_id=?
+              AND approved_uid IS NOT NULL
+              AND (discord_username IS NULL OR discord_username='')
+            """,
+            (discord_username, discord_user_id),
+        )
+        self._db.commit()
+        return cursor.rowcount
 
     def review_roster_profile(
         self,
