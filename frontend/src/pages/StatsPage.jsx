@@ -1,6 +1,8 @@
-import { useCallback, useState, useEffect, useRef } from 'react'
-import { getLeaderboard, getRecentStats, getStatsSummary, getPlayerHistory } from '../utils/api.js'
+import { lazy, Suspense, useCallback, useState, useEffect, useRef } from 'react'
+import { getLeaderboard, getRecentStats, getRoster } from '../utils/api.js'
 import { fmtDateTime } from '../utils/format.js'
+
+const StatsPlayerCharts = lazy(() => import('../components/StatsPlayerCharts.jsx'))
 
 const GUILD_KEY = 'sw_guild_id'
 function safeGet(k) { try { return localStorage.getItem(k) || '' } catch { return '' } }
@@ -28,17 +30,27 @@ function similarity(a, b) {
 
 const mono = { fontFamily: 'monospace' }
 const card = { background: '#111320', border: '1px solid #1e2235', borderRadius: 12 }
-const inp  = {
-  background: '#07080f', border: '1px solid #1e2235', borderRadius: 8,
-  padding: '8px 12px', fontSize: 13, color: '#c8cde8', fontFamily: 'monospace', outline: 'none',
-}
-const MEDALS  = ['🥇','🥈','🥉']
 const DAY_OPTS = [3, 7, 14, 30]
 const MAPS     = ['All', 'Erangel', 'Miramar', 'Rondo', 'Sanhok', 'Vikendi', 'Nusa', 'Livik']
 
 const MAP_COLOR = {
   Erangel:'#4caf93', Miramar:'#d4a843', Rondo:'#7c6fcd',
   Sanhok:'#68a85e', Vikendi:'#7fb5c8', Nusa:'#e07060', Livik:'#a0c878',
+}
+
+function normalizeIgn(name) {
+  return String(name || '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+}
+
+function getKd(player) {
+  const kills = Number(player.total_kills) || 0
+  const deaths = Number(player.total_deaths)
+  if (Number.isFinite(deaths) && deaths > 0) return kills / deaths
+  const matches = Number(player.matches) || 0
+  return matches ? kills / matches : 0
 }
 
 function placeBadge(p) {
@@ -114,106 +126,92 @@ function FuzzyModal({ matches, allNames, onConfirmAll, onDismiss }) {
 }
 
 // ── Player Detail Modal ────────────────────────────────────────────────────
-function PlayerModal({ player, guildId, onClose }) {
-  const [history, setHistory] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    if (!player) return
-    setLoading(true)
-    getPlayerHistory(guildId, player.player_name, 30)
-      .then(r => setHistory(r?.data?.matches || []))
-      .catch(() => setHistory([]))
-      .finally(() => setLoading(false))
-  }, [player, guildId])
-
+function PlayerModal({ player, history, rosterEntry, onClose }) {
   if (!player) return null
 
-  const totalKills  = history.reduce((s, m) => s + (m.kills  || 0), 0)
-  const totalDmg    = history.reduce((s, m) => s + (m.damage || 0), 0)
-  const dinners     = history.filter(m => m.placement === 1).length
-  const top5        = history.filter(m => m.placement <= 5).length
+  const recentMatches = [...history]
+    .sort((a, b) => Date.parse(a.detected_at || '') - Date.parse(b.detected_at || ''))
+    .slice(-15)
+  const totalKills = history.reduce((sum, match) => sum + (Number(match.kills) || 0), 0)
+  const totalDamage = history.reduce((sum, match) => sum + (Number(match.damage) || 0), 0)
+  const dinners = history.filter(match => Number(match.placement) === 1).length
+  const top5 = history.filter(match => Number(match.placement) > 0 && Number(match.placement) <= 5).length
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000,
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/75 p-3 sm:p-5"
       onClick={onClose}>
-      <div style={{ ...card, width: '100%', maxWidth: 640, maxHeight: '85vh',
-        overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
-        onClick={e => e.stopPropagation()}>
-
-        {/* Header */}
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #1e2235',
-          display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(0,229,255,0.1)',
-            border: '1px solid rgba(0,229,255,0.2)', display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>
-            {player.player_name[0]?.toUpperCase()}
+      <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[#29304a] bg-[#0c0e18] shadow-2xl"
+        onClick={event => event.stopPropagation()}>
+        <header className="flex items-center gap-3 border-b border-[#1e2235] p-4 sm:p-5">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-400/10 text-lg font-black text-cyan-200">
+            {player.player_name.split(/[\s_-]/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || '?'}
           </div>
-          <div>
-            <p style={{ fontWeight: 700, color: '#fff', fontSize: 16 }}>{player.player_name}</p>
-            <p style={{ fontSize: 11, color: '#5c6284', ...mono }}>{player.matches} matches · {player.mvp_count} MVPs</p>
+          <div className="min-w-0">
+            <h2 className="truncate text-lg font-black text-white sm:text-xl">{player.player_name}</h2>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[#8189a9]">
+              <span>{player.matches} matches</span>
+              {rosterEntry && (
+                <>
+                  <span className="font-mono text-cyan-200">UID {rosterEntry.uid}</span>
+                  <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                    rosterEntry.role === 'starter'
+                      ? 'border-cyan-300/20 bg-cyan-300/10 text-cyan-200'
+                      : 'border-violet-300/20 bg-violet-300/10 text-violet-200'
+                  }`}>{rosterEntry.role === 'starter' ? 'Starter' : 'Sub'}</span>
+                </>
+              )}
+            </div>
           </div>
-          <button onClick={onClose}
-            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#5c6284',
-              cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>✕</button>
-        </div>
+          <button type="button" onClick={onClose} aria-label="Close player details"
+            className="ml-auto rounded-lg border border-[#29304a] px-3 py-2 text-sm text-[#aeb5d2] hover:border-cyan-400/40 hover:text-white">✕</button>
+        </header>
 
-        {/* Quick stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 1,
-          borderBottom: '1px solid #1e2235', background: '#1e2235' }}>
+        <div className="grid grid-cols-2 gap-px border-b border-[#1e2235] bg-[#1e2235] sm:grid-cols-4">
           {[
-            { label: 'Total Kills',  value: totalKills,             color: '#00ff88' },
-            { label: 'Total Damage', value: totalDmg?.toLocaleString(), color: '#a78bfa' },
-            { label: 'WWCD',         value: `🏆 ${dinners}`,        color: '#ffb800' },
-            { label: 'Top 5',        value: top5,                   color: '#00e5ff' },
-          ].map(({ label, value, color }) => (
-            <div key={label} style={{ background: '#111320', padding: '12px 14px', textAlign: 'center' }}>
-              <p style={{ fontSize: 9, color: '#5c6284', ...mono, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</p>
-              <p style={{ fontSize: 20, fontWeight: 700, color }}>{value ?? '—'}</p>
+            ['Kills in history', totalKills, 'text-emerald-300'],
+            ['Damage in history', totalDamage.toLocaleString(), 'text-violet-300'],
+            ['Chicken dinners', dinners, 'text-amber-300'],
+            ['Top-5 finishes', top5, 'text-cyan-300'],
+          ].map(([label, value, color]) => (
+            <div key={label} className="bg-[#10121e] px-3 py-3 text-center">
+              <p className="text-[9px] font-semibold uppercase tracking-wider text-[#737b9e]">{label}</p>
+              <p className={`mt-1 text-xl font-black ${color}`}>{value}</p>
             </div>
           ))}
         </div>
 
-        {/* Match history */}
-        <div style={{ overflowY: 'auto', flex: 1 }}>
-          {loading ? (
-            <div style={{ padding: 32, textAlign: 'center' }}>
-              <p style={{ color: '#5c6284', fontSize: 12, ...mono }}>Loading history…</p>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
+          <Suspense fallback={<div className="flex h-64 items-center justify-center rounded-xl border border-[#1e2235] bg-[#10121e] text-sm text-[#737b9e]">Loading player charts…</div>}>
+            <StatsPlayerCharts matches={recentMatches} />
+          </Suspense>
+          <div className="overflow-hidden rounded-xl border border-[#1e2235] bg-[#10121e]">
+            <div className="border-b border-[#1e2235] px-4 py-3">
+              <h3 className="text-sm font-bold text-white">Recent match records</h3>
             </div>
-          ) : history.length === 0 ? (
-            <div style={{ padding: 32, textAlign: 'center' }}>
-              <p style={{ color: '#5c6284', fontSize: 12, ...mono }}>No detailed match history.</p>
-            </div>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead>
-                <tr style={{ background: 'rgba(0,0,0,0.3)', position: 'sticky', top: 0 }}>
-                  {['Date','Map','Place','K','DMG','A','RTG','MVP'].map(h => (
-                    <th key={h} style={{ padding: '8px 12px', textAlign: 'left',
-                      fontSize: 9, color: '#5c6284', textTransform: 'uppercase',
-                      letterSpacing: '0.07em', ...mono, whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((m, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid rgba(30,34,53,0.5)' }}
-                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,0,0,0.2)'}
-                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                    <td style={{ padding: '8px 12px', color: '#5c6284', ...mono, whiteSpace: 'nowrap' }}>{fmtDateTime(m.detected_at)}</td>
-                    <td style={{ padding: '8px 12px', color: MAP_COLOR[m.map_name] || '#c8cde8', fontWeight: 600 }}>{m.map_name || '—'}</td>
-                    <td style={{ padding: '8px 12px' }}><PlaceBadge p={m.placement} /></td>
-                    <td style={{ padding: '8px 12px', color: '#00ff88', fontWeight: 700, ...mono }}>{m.kills}</td>
-                    <td style={{ padding: '8px 12px', color: '#a78bfa', ...mono }}>{m.damage ?? '—'}</td>
-                    <td style={{ padding: '8px 12px', color: '#c8cde8', ...mono }}>{m.assists ?? '—'}</td>
-                    <td style={{ padding: '8px 12px', color: '#5c6284', ...mono }}>{m.rating ?? '—'}</td>
-                    <td style={{ padding: '8px 12px', color: '#ffb800' }}>{m.is_mvp ? '⭐' : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+            {recentMatches.length === 0 ? (
+              <p className="p-6 text-center text-sm text-[#737b9e]">No recent matches available for this player.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[620px] text-left text-xs">
+                  <thead className="bg-[#0b0d17] text-[9px] uppercase tracking-wider text-[#737b9e]">
+                    <tr>{['Date', 'Map', 'Place', 'Kills', 'Damage', 'Survival'].map(label => <th key={label} className="px-3 py-2.5">{label}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {[...recentMatches].reverse().map((match, index) => (
+                      <tr key={`${match.image_hash || match.detected_at}-${index}`} className="border-t border-[#1e2235] text-[#c8cde8]">
+                        <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[#8189a9]">{fmtDateTime(match.detected_at)}</td>
+                        <td className="px-3 py-2.5" style={{ color: MAP_COLOR[match.map_name] || '#c8cde8' }}>{match.map_name || '—'}</td>
+                        <td className="px-3 py-2.5"><PlaceBadge p={match.placement} /></td>
+                        <td className="px-3 py-2.5 font-mono text-emerald-300">{match.kills ?? '—'}</td>
+                        <td className="px-3 py-2.5 font-mono text-violet-300">{match.damage ?? '—'}</td>
+                        <td className="px-3 py-2.5 font-mono">{match.survived != null ? `${match.survived}m` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -227,10 +225,12 @@ export default function StatsPage() {
   const [days,        setDays]        = useState(7)
   const [tab,         setTab]         = useState('leaderboard')
   const [mapFilter,   setMapFilter]   = useState('All')
+  const [sortBy,      setSortBy]      = useState('rating')
   const [leaderboard, setLeaderboard] = useState([])
   const [recent,      setRecent]      = useState([])
-  const [summary,     setSummary]     = useState(null)
+  const [roster,      setRoster]      = useState([])
   const [loading,     setLoading]     = useState(false)
+  const [error,       setError]       = useState('')
   const [search,      setSearch]      = useState('')
   const [modal,       setModal]       = useState(null)   // selected player row
   const [aliases,     setAliases]     = useState(() => safeJSON(aliasesKey(safeGet(GUILD_KEY)), {}))
@@ -239,17 +239,25 @@ export default function StatsPage() {
   const fetchData = useCallback(async (gid, d) => {
     if (!gid) return
     setLoading(true)
+    setError('')
     try {
-      const [lbRes, recRes, sumRes] = await Promise.all([
+      const [lbRes, recRes] = await Promise.all([
         getLeaderboard(gid, d),
         getRecentStats(gid, 50),
-        getStatsSummary(gid),
       ])
       setLeaderboard(lbRes?.data?.players || [])
       setRecent(recRes?.data?.records   || [])
-      setSummary(sumRes?.data           || null)
     } catch (e) {
       console.error('Stats fetch failed:', e)
+      setError(e.response?.data?.detail || e.message || 'Unable to load player stats.')
+    }
+    try {
+      const rosterResponse = await getRoster(gid)
+      setRoster((rosterResponse?.data?.teams || []).flatMap(team =>
+        (team.players || []).map(player => ({ ...player, team_tag: team.team_tag }))
+      ))
+    } catch {
+      setRoster([])
     } finally {
       setLoading(false)
     }
@@ -360,8 +368,51 @@ export default function StatsPage() {
     .map(r => ({ ...r, player_name: resolve(r.player_name), _originalName: r.player_name }))
     .filter(r => mapFilter === 'All' || r.map_name === mapFilter)
 
+  const rosterByIgn = new Map(
+    roster.map(player => [normalizeIgn(player.ign), player]).filter(([ign]) => ign)
+  )
+  const playerCards = filteredLb.map(player => {
+    const playerRecent = recent.filter(record => {
+      const resolvedName = resolve(record.player_name)
+      return resolvedName === player.player_name || (player._aliases || []).includes(record.player_name)
+    })
+    const survivalValues = playerRecent
+      .map(record => Number(record.survived))
+      .filter(value => Number.isFinite(value) && value > 0)
+    const averageSurvival = survivalValues.length
+      ? survivalValues.reduce((sum, value) => sum + value, 0) / survivalValues.length
+      : null
+    return {
+      ...player,
+      _kd: getKd(player),
+      _roster: rosterByIgn.get(normalizeIgn(player.player_name)) || null,
+      _avgSurvival: averageSurvival,
+      _recent: playerRecent,
+    }
+  })
+  const sortValues = {
+    rating: player => Number(player.avg_rating) || 0,
+    kills: player => Number(player.total_kills) || 0,
+    damage: player => Number(player.total_damage) || 0,
+    kd: player => player._kd,
+  }
+  const sortedPlayers = [...playerCards].sort((a, b) =>
+    sortValues[sortBy](b) - sortValues[sortBy](a)
+      || (Number(b.avg_rating) || 0) - (Number(a.avg_rating) || 0)
+      || a.player_name.localeCompare(b.player_name)
+  )
+  const podiumPlayers = [...playerCards]
+    .sort((a, b) => (Number(b.avg_rating) || 0) - (Number(a.avg_rating) || 0)
+      || a.player_name.localeCompare(b.player_name))
+    .slice(0, 3)
+  const maxKd = Math.max(...playerCards.map(player => player._kd), 0)
+  const maxDamage = Math.max(...playerCards.map(player => Number(player.avg_damage) || 0), 0)
+  const modalPlayer = modal
+    ? playerCards.find(player => player.player_name === modal.player_name) || modal
+    : null
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div className="mx-auto w-full max-w-7xl space-y-5 pb-8">
 
       {/* Fuzzy match confirmation */}
       {fuzzyQ.length > 0 && (
@@ -374,137 +425,116 @@ export default function StatsPage() {
       )}
 
       {/* Guild input */}
-      <div style={{ ...card, padding: 16 }}>
-        <p style={{ fontSize: 10, color: '#5c6284', ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-          Server (Guild) ID
-        </p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input style={{ ...inp, flex: 1, minWidth: 200 }}
-            placeholder="Paste your Discord Server ID…"
-            value={inputId}
-            onChange={e => setInputId(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && apply()} />
-          <button onClick={apply}
-            style={{ padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-              background: '#00e5ff', color: '#07080f', border: 'none', cursor: 'pointer' }}>
-            Load Stats
-          </button>
-          <button onClick={() => fetchData(guildId, days)}
-            style={{ padding: '8px 12px', borderRadius: 8, fontSize: 13,
-              background: 'transparent', color: '#5c6284', border: '1px solid #1e2235', cursor: 'pointer' }}>
-            ↻
-          </button>
+      <header className="rounded-2xl border border-[#1e2235] bg-gradient-to-br from-[#111522] via-[#0c0e18] to-[#080a12] p-5 sm:p-7">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400">ScrimWatch · player analytics</p>
+            <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">Player performance</h1>
+            <p className="mt-1 text-sm text-[#8189a9]">Ratings, match output and roster-linked player profiles.</p>
+          </div>
+          <span className="rounded-full border border-cyan-400/20 bg-cyan-400/[0.07] px-3 py-1.5 font-mono text-[11px] text-cyan-200">{days}-day window</span>
         </div>
-        {!guildId && (
-          <p style={{ fontSize: 10, color: '#5c6284', ...mono, marginTop: 6 }}>
-            In Discord: right-click server name → Copy Server ID
-          </p>
-        )}
-      </div>
+        <div className="flex flex-col gap-3 rounded-xl border border-[#1e2235] bg-[#07080f]/70 p-3 sm:flex-row sm:items-end">
+          <label className="min-w-0 flex-1">
+            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-[#737b9e]">Discord server ID</span>
+            <input
+              value={inputId}
+              onChange={event => setInputId(event.target.value)}
+              onKeyDown={event => event.key === 'Enter' && apply()}
+              placeholder="Paste your server ID"
+              className="w-full rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2.5 font-mono text-sm text-[#e2e6f5] outline-none placeholder:text-[#505775] focus:border-cyan-400/50"
+            />
+          </label>
+          <button type="button" onClick={apply} disabled={!inputId.trim()}
+            className="rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">Load server</button>
+          <button type="button" onClick={() => fetchData(guildId, days)} disabled={!guildId || loading}
+            className="rounded-lg border border-[#29304a] px-4 py-2.5 text-sm font-semibold text-[#aeb5d2] hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-50">Refresh</button>
+        </div>
+      </header>
 
       {!guildId ? (
-        <div style={{ ...card, padding: 48, textAlign: 'center' }}>
-          <p style={{ color: '#c8cde8', fontSize: 14 }}>Enter your Server ID above to load stats</p>
-          <p style={{ color: '#5c6284', fontSize: 12, ...mono, marginTop: 6 }}>
+        <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] px-4 py-12 text-center">
+          <p className="text-sm font-semibold text-[#c8cde8]">Enter a server ID to view player analytics.</p>
+          <p className="mt-1 text-xs text-[#68708f]">
             Stats are tracked when players share BGMI screenshots in your stats channel
           </p>
-          <div style={{ marginTop: 16, padding: '10px 16px', background: '#07080f',
-            border: '1px solid rgba(0,229,255,0.2)', borderRadius: 8, display: 'inline-block' }}>
-            <p style={{ fontSize: 11, color: '#00e5ff', ...mono }}>!setstatschannel — in your match results Discord channel</p>
+          <div className="mt-4 inline-block rounded-lg border border-cyan-400/20 bg-[#07080f] px-4 py-2.5">
+            <p className="font-mono text-[11px] text-cyan-300">!setstatschannel — in your match results Discord channel</p>
           </div>
         </div>
 
       ) : loading && !leaderboard.length ? (
-        <div style={{ ...card, padding: 48, textAlign: 'center' }}>
-          <div style={{ width: 20, height: 20, border: '2px solid #1e2235',
-            borderTop: '2px solid #00e5ff', borderRadius: '50%',
-            animation: 'spin 1s linear infinite', margin: '0 auto 8px' }} />
-          <p style={{ color: '#5c6284', fontSize: 12, ...mono }}>Loading stats…</p>
+        <div className="rounded-xl border border-[#1e2235] bg-[#10121e] px-4 py-12 text-center">
+          <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/25 border-t-cyan-400" />
+          <p className="mt-3 font-mono text-xs text-[#7f86a8]">Loading player stats…</p>
+        </div>
+
+      ) : error && !leaderboard.length ? (
+        <div role="alert" className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-10 text-center text-sm text-rose-300">
+          Unable to load player stats. {error}
         </div>
 
       ) : (
         <>
-          {/* Summary cards */}
-          {summary && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(130px,1fr))', gap: 10 }}>
-              {[
-                { label: 'Players',       value: summary.players_tracked,  color: '#00e5ff' },
-                { label: `Matches (${days}d)`, value: summary.matches_7d, color: '#ffb800' },
-                { label: `Kills (${days}d)`,   value: summary.total_kills_7d, color: '#00ff88' },
-                { label: `Damage (${days}d)`,  value: summary.total_damage_7d?.toLocaleString(), color: '#a78bfa' },
-              ].map(({ label, value, color }) => (
-                <div key={label} style={{ ...card, padding: 14 }}>
-                  <p style={{ fontSize: 9, color: '#5c6284', ...mono, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</p>
-                  <p style={{ fontSize: 22, fontWeight: 700, color, lineHeight: 1 }}>{value ?? 0}</p>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Top fragger banner */}
-          {summary?.top_player && (
-            <div style={{ ...card, padding: '12px 16px', borderColor: 'rgba(255,184,0,0.3)',
-              background: 'rgba(255,184,0,0.03)', display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span style={{ fontSize: 20 }}>🏆</span>
-              <div>
-                <p style={{ fontSize: 10, color: '#5c6284', ...mono }}>TOP FRAGGER THIS PERIOD</p>
-                <p style={{ fontSize: 16, fontWeight: 700, color: '#ffb800' }}>{summary.top_player}</p>
-              </div>
-              {summary.top_kills && (
-                <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-                  <p style={{ fontSize: 10, color: '#5c6284', ...mono }}>TOTAL KILLS</p>
-                  <p style={{ fontSize: 20, fontWeight: 700, color: '#00ff88' }}>{summary.top_kills}</p>
-                </div>
-              )}
-            </div>
-          )}
+          {error && <div role="alert" className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-300">Stats refresh failed. {error}</div>}
 
           {/* Controls row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="flex flex-col gap-3 rounded-xl border border-[#1e2235] bg-[#10121e] p-3 sm:flex-row sm:flex-wrap sm:items-center">
             {/* Day filter */}
-            <div style={{ display: 'flex', gap: 4 }}>
+            <div className="flex flex-wrap gap-1.5">
               {DAY_OPTS.map(d => (
-                <button key={d} onClick={() => setDays(d)}
-                  style={{ padding: '5px 10px', borderRadius: 7, fontSize: 11, ...mono, cursor: 'pointer',
-                    border: `1px solid ${days===d ? '#00e5ff' : '#1e2235'}`,
-                    background: days===d ? '#00e5ff' : 'transparent',
-                    color: days===d ? '#07080f' : '#5c6284',
-                    fontWeight: days===d ? 700 : 400 }}>
+                <button key={d} type="button" onClick={() => setDays(d)}
+                  className={`rounded-full border px-3 py-1.5 font-mono text-xs transition ${
+                    days === d
+                      ? 'border-cyan-300 bg-cyan-300 text-[#071016]'
+                      : 'border-[#29304a] text-[#8991b0] hover:border-cyan-400/40 hover:text-cyan-200'
+                  }`}>
                   {d}d
                 </button>
               ))}
             </div>
 
             {/* Tabs */}
-            <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+            <div className="flex gap-1.5">
               {[['leaderboard','🏆 Leaderboard'],['recent','🕐 Recent']].map(([t, label]) => (
-                <button key={t} onClick={() => setTab(t)}
-                  style={{ padding: '5px 12px', borderRadius: 7, fontSize: 12, cursor: 'pointer',
-                    border: `1px solid ${tab===t ? '#00e5ff' : '#1e2235'}`,
-                    background: tab===t ? '#111320' : 'transparent',
-                    color: tab===t ? '#00e5ff' : '#5c6284' }}>
+                <button key={t} type="button" onClick={() => setTab(t)}
+                  className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                    tab === t
+                      ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200'
+                      : 'border-[#29304a] text-[#8991b0] hover:text-white'
+                  }`}>
                   {label}
                 </button>
               ))}
             </div>
 
-            {/* Search (leaderboard) */}
             {tab === 'leaderboard' && (
-              <input style={{ ...inp, marginLeft: 'auto', width: 180 }}
-                placeholder="Search player…"
-                value={search}
-                onChange={e => setSearch(e.target.value)} />
+              <>
+                <input className="min-w-0 flex-1 rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2 font-mono text-xs text-[#e2e6f5] outline-none placeholder:text-[#505775] focus:border-cyan-400/50 sm:ml-auto sm:max-w-52"
+                  placeholder="Search player…" value={search} onChange={event => setSearch(event.target.value)} />
+                <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[#737b9e]">
+                  Sort
+                  <select value={sortBy} onChange={event => setSortBy(event.target.value)}
+                    className="rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2 text-xs normal-case tracking-normal text-[#c8cde8] outline-none focus:border-cyan-400/50">
+                    <option value="rating">Rating</option>
+                    <option value="kills">Kills</option>
+                    <option value="damage">Damage</option>
+                    <option value="kd">K/D</option>
+                  </select>
+                </label>
+              </>
             )}
 
             {/* Map filter (recent) */}
             {tab === 'recent' && (
-              <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', flexWrap: 'wrap' }}>
+              <div className="flex flex-wrap gap-1.5 sm:ml-auto">
                 {MAPS.map(m => (
-                  <button key={m} onClick={() => setMapFilter(m)}
-                    style={{ padding: '4px 8px', borderRadius: 5, fontSize: 10, ...mono, cursor: 'pointer',
-                      border: `1px solid ${mapFilter===m ? (MAP_COLOR[m] || '#00e5ff') : '#1e2235'}`,
-                      background: mapFilter===m ? 'rgba(0,229,255,0.06)' : 'transparent',
-                      color: mapFilter===m ? (MAP_COLOR[m] || '#00e5ff') : '#5c6284' }}>
+                  <button key={m} type="button" onClick={() => setMapFilter(m)}
+                    className={`rounded-full border px-2.5 py-1 font-mono text-[10px] transition ${
+                      mapFilter === m
+                        ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200'
+                        : 'border-[#29304a] text-[#737b9e] hover:text-white'
+                    }`}>
                     {m}
                   </button>
                 ))}
@@ -514,60 +544,137 @@ export default function StatsPage() {
 
           {/* ── LEADERBOARD TAB ── */}
           {tab === 'leaderboard' && (
-            <div style={{ ...card, overflow: 'hidden' }}>
-              {filteredLb.length === 0 ? (
-                <div style={{ padding: 48, textAlign: 'center' }}>
-                  <p style={{ color: '#c8cde8', fontSize: 14 }}>No stats yet</p>
-                  <p style={{ color: '#5c6284', fontSize: 12, ...mono, marginTop: 6 }}>
-                    Use <span style={{ color: '#00e5ff' }}>!setstatschannel</span> in Discord, then share BGMI screenshots
-                  </p>
-                </div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ background: 'rgba(0,0,0,0.3)', borderBottom: '1px solid #1e2235' }}>
-                        {['#','Player','Kills','Avg K','Damage','Avg DMG','Assists','Matches','Best','MVP','Rating'].map(h => (
-                          <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10,
-                            color: '#5c6284', textTransform: 'uppercase', letterSpacing: '0.07em',
-                            whiteSpace: 'nowrap', ...mono }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredLb.map((r, i) => (
-                        <tr key={r.player_name}
-                          style={{ borderBottom: '1px solid rgba(30,34,53,0.5)', cursor: 'pointer' }}
-                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,229,255,0.04)'}
-                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                          onClick={() => setModal(r)}>
-                          <td style={{ padding: '10px 12px', color: '#5c6284', ...mono }}>{MEDALS[i] || `#${i+1}`}</td>
-                          <td style={{ padding: '10px 12px', fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }}>
-                            {r.player_name}
-                            <span style={{ fontSize: 9, color: '#5c6284', ...mono, marginLeft: 6 }}>↗</span>
-                            {r._aliases?.length > 0 && (
-                              <span style={{ fontSize: 8, color: '#a78bfa', ...mono, marginLeft: 4 }}
-                                title={`Merged: ${r._aliases.join(', ')}`}>
-                                ≈{r._aliases.length}
-                              </span>
-                            )}
-                          </td>
-                          <td style={{ padding: '10px 12px', color: '#00ff88', fontWeight: 700, ...mono }}>{r.total_kills}</td>
-                          <td style={{ padding: '10px 12px', color: '#5c6284', ...mono }}>{r.avg_kills}</td>
-                          <td style={{ padding: '10px 12px', color: '#a78bfa', ...mono }}>{r.total_damage?.toLocaleString() || '—'}</td>
-                          <td style={{ padding: '10px 12px', color: '#5c6284', ...mono }}>{r.avg_damage || '—'}</td>
-                          <td style={{ padding: '10px 12px', color: '#c8cde8', ...mono }}>{r.total_assists}</td>
-                          <td style={{ padding: '10px 12px', color: '#c8cde8', ...mono }}>{r.matches}</td>
-                          <td style={{ padding: '10px 12px' }}><PlaceBadge p={r.best_placement} /></td>
-                          <td style={{ padding: '10px 12px', color: '#ffb800', ...mono }}>{r.mvp_count > 0 ? `⭐ ×${r.mvp_count}` : '—'}</td>
-                          <td style={{ padding: '10px 12px', color: '#5c6284', ...mono }}>{r.avg_rating || '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+            filteredLb.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[#29304a] bg-[#10121e] px-4 py-12 text-center">
+                <p className="text-sm font-semibold text-[#c8cde8]">No stats yet. Check that the correct Server ID is set.</p>
+                <p className="mt-1 text-xs text-[#68708f]">Stats appear after BGMI screenshots are shared in the configured Discord channel.</p>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                <section>
+                  <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">Hall of fame</p>
+                      <h2 className="mt-1 text-lg font-bold text-white">Top rated players</h2>
+                    </div>
+                    <p className="font-mono text-[10px] text-[#737b9e]">Rating · {days}-day window</p>
+                  </div>
+                  <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-3">
+                    {podiumPlayers.map((player, index) => {
+                      const podiumPlace = index + 1
+                      const sizeClass = podiumPlace === 1 ? 'md:order-2 md:-translate-y-3' : podiumPlace === 2 ? 'md:order-1' : 'md:order-3'
+                      return (
+                        <button
+                          key={player.player_name}
+                          type="button"
+                          onClick={() => setModal(player)}
+                          className={`group relative flex min-h-44 flex-col items-center justify-center overflow-hidden rounded-2xl border bg-gradient-to-b from-[#151a2a] to-[#0c0e18] px-4 py-5 text-center transition hover:-translate-y-1 hover:border-cyan-300/40 ${sizeClass} ${
+                            podiumPlace === 1 ? 'border-amber-300/30 shadow-[0_0_32px_rgba(251,191,36,0.08)]' : 'border-[#252b43]'
+                          }`}
+                        >
+                          <span className={`absolute right-3 top-3 rounded-full border px-2 py-1 font-mono text-[9px] font-bold ${
+                            podiumPlace === 1 ? 'border-amber-300/25 bg-amber-300/10 text-amber-200' : 'border-[#29304a] text-[#8991b0]'
+                          }`}>#{podiumPlace}</span>
+                          <span className={`flex h-16 w-16 items-center justify-center rounded-full border-2 bg-[#07080f] text-xl font-black ${
+                            podiumPlace === 1 ? 'border-amber-300/50 text-amber-200' : 'border-cyan-300/30 text-cyan-200'
+                          }`}>
+                            {player.player_name.split(/[\s_-]/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || '?'}
+                          </span>
+                          <span className="mt-3 max-w-full truncate text-base font-black text-white">{player.player_name}</span>
+                          <span className="mt-1 font-mono text-xs text-[#aeb5d2]">Rating {Number(player.avg_rating || 0).toFixed(1)} <span className="mx-1 text-[#515a7a]">·</span> K/D {player._kd.toFixed(2)}</span>
+                          {player._roster && <span className="mt-2 font-mono text-[10px] text-cyan-200">UID {player._roster.uid}</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
+
+                <section>
+                  <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">Roster performance</p>
+                      <h2 className="mt-1 text-lg font-bold text-white">Player cards</h2>
+                    </div>
+                    <p className="font-mono text-[10px] text-[#737b9e]">{sortedPlayers.length} player{sortedPlayers.length === 1 ? '' : 's'} · click a card for match detail</p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {sortedPlayers.map((player, index) => {
+                      const kdPercent = maxKd ? Math.min((player._kd / maxKd) * 100, 100) : 0
+                      const damage = Number(player.avg_damage) || 0
+                      const damagePercent = maxDamage ? Math.min((damage / maxDamage) * 100, 100) : 0
+                      return (
+                        <button
+                          key={player.player_name}
+                          type="button"
+                          onClick={() => setModal(player)}
+                          className="rounded-xl border border-[#1e2235] bg-[#10121e] p-4 text-left transition hover:border-cyan-400/35 hover:bg-[#121625] focus:outline-none focus:ring-2 focus:ring-cyan-400/30"
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-cyan-300/20 bg-cyan-400/[0.08] font-bold text-cyan-200">
+                              {player.player_name.split(/[\s_-]/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join('') || '?'}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h3 className="truncate text-base font-bold text-white">{player.player_name}</h3>
+                                {index === 0 && <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-0.5 text-[9px] font-bold uppercase text-amber-200">Top rated</span>}
+                                {player._aliases?.length > 0 && <span title={`Merged: ${player._aliases.join(', ')}`} className="font-mono text-[9px] text-violet-300">≈{player._aliases.length}</span>}
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px]">
+                                {player._roster ? (
+                                  <>
+                                    <span className="font-mono text-cyan-200">UID {player._roster.uid}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 font-bold uppercase tracking-wide ${
+                                      player._roster.role === 'starter'
+                                        ? 'border-cyan-300/20 bg-cyan-300/10 text-cyan-200'
+                                        : 'border-violet-300/20 bg-violet-300/10 text-violet-200'
+                                    }`}>{player._roster.role === 'starter' ? 'Starter' : 'Sub'}</span>
+                                  </>
+                                ) : <span className="text-[#68708f]">Not on approved roster</span>}
+                              </div>
+                            </div>
+                            <span className="font-mono text-[10px] text-[#737b9e]">#{index + 1}</span>
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3">
+                            {[
+                              ['Matches', player.matches ?? 0],
+                              ['Total kills', Number(player.total_kills || 0).toLocaleString()],
+                              ['K/D', player._kd.toFixed(2)],
+                              ['Avg damage', damage.toLocaleString()],
+                              ['Avg survival', player._avgSurvival != null ? `${player._avgSurvival.toFixed(1)}m` : '—'],
+                              ['MVPs', player.mvp_count || 0],
+                            ].map(([label, value]) => (
+                              <div key={label} className="rounded-lg border border-[#1e2235] bg-[#0b0d17] px-3 py-2">
+                                <p className="text-[9px] font-semibold uppercase tracking-wider text-[#737b9e]">{label}</p>
+                                <p className="mt-1 font-mono text-sm font-bold text-[#e0e5f5]">{value}</p>
+                              </div>
+                            ))}
+                            <div className="col-span-2 rounded-lg border border-[#1e2235] bg-[#0b0d17] px-3 py-2">
+                              <div className="mb-1 flex justify-between text-[9px] uppercase tracking-wider text-[#737b9e]">
+                                <span>Average rating</span><span className="font-mono text-cyan-200">{Number(player.avg_rating || 0).toFixed(1)}</span>
+                              </div>
+                              <div className="h-1.5 overflow-hidden rounded-full bg-[#20243a]">
+                                <div className="h-full rounded-full bg-cyan-300" style={{ width: `${Math.min((Number(player.avg_rating) || 0) / Math.max(...playerCards.map(item => Number(item.avg_rating) || 0), 1) * 100, 100)}%` }} />
+                              </div>
+                            </div>
+                            <div className="col-span-2 space-y-2">
+                              <div>
+                                <div className="mb-1 flex justify-between text-[9px] uppercase tracking-wider text-[#737b9e]"><span>K/D vs best</span><span className="font-mono text-cyan-200">{player._kd.toFixed(2)}</span></div>
+                                <div className="h-1 overflow-hidden rounded-full bg-[#20243a]"><div className="h-full rounded-full bg-cyan-400" style={{ width: `${kdPercent}%` }} /></div>
+                              </div>
+                              <div>
+                                <div className="mb-1 flex justify-between text-[9px] uppercase tracking-wider text-[#737b9e]"><span>Damage vs best</span><span className="font-mono text-violet-200">{damage.toLocaleString()}</span></div>
+                                <div className="h-1 overflow-hidden rounded-full bg-[#20243a]"><div className="h-full rounded-full bg-violet-400" style={{ width: `${damagePercent}%` }} /></div>
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
+              </div>
+            )
           )}
 
           {/* ── RECENT TAB ── */}
@@ -636,14 +743,13 @@ export default function StatsPage() {
       )}
 
       {/* Player detail modal */}
-      {modal && (
+      {modalPlayer && (
         <PlayerModal
-          player={modal}
-          guildId={guildId}
+          player={modalPlayer}
+          history={modalPlayer._recent || []}
+          rosterEntry={modalPlayer._roster}
           onClose={() => setModal(null)} />
       )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }
