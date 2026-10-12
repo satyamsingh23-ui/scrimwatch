@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import discord
 
 from api import dashboard
 from bot import discord_bot
@@ -399,7 +400,7 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
             self.database.get_roster_profile(self.guild_id, profile["discord_user_id"])
         )
 
-    async def test_stats_save_skips_players_not_on_approved_roster(self):
+    async def test_stats_review_preselects_normalized_roster_match(self):
         approved = self._create_profile(
             user_id=1010,
             ign="[HLS] Rostered",
@@ -410,37 +411,324 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
             approved["discord_user_id"],
             "approved",
         )
-        records = [
-            {
-                "guild_id": self.guild_id,
-                "player_name": "HLS.Rostered",
-                "kills": 5,
-                "placement": 1,
-            },
-            {
-                "guild_id": self.guild_id,
-                "player_name": "Unregistered Player",
-                "kills": 8,
-                "placement": 1,
-            },
-        ]
+        roster = self.database.get_approved_roster_profiles(self.guild_id)
         view = discord_bot.StatsConfirmView(
-            records=records,
-            img_hash="approved-roster-filter-test",
+            records=[
+                {"player_name": "HLS.Rosterd", "kills": 5},
+                {"player_name": "Unknown Player", "kills": 2},
+            ],
+            img_hash="preselect-test",
             guild_id=self.guild_id,
             message=_ReviewMessage(),
             place_str="#1",
             map_name="Erangel",
+            roster_profiles=roster,
         )
-        interaction = self._create_edit_interaction(999, is_admin=True)
+
+        self.assertEqual(view.assignments, [roster[0]["id"], None])
+        selectors = [item for item in view.children if isinstance(item, discord.ui.Select)]
+        self.assertEqual(len(selectors), 2)
+        self.assertTrue(next(option for option in selectors[0].options if option.value == str(roster[0]["id"])).default)
+        self.assertTrue(next(option for option in selectors[1].options if option.value == "unknown").default)
+        self.assertLessEqual(max(len(item.options) for item in selectors), 25)
+
+    async def test_stats_review_manual_assignment_overrides_preselection(self):
+        first = self._create_profile(user_id=1011, ign="FirstPlayer", uid="101010111")
+        second = self._create_profile(user_id=1012, ign="SecondPlayer", uid="101010112")
+        for profile in (first, second):
+            self.database.review_roster_profile(
+                self.guild_id,
+                profile["discord_user_id"],
+                "approved",
+            )
+        roster = self.database.get_approved_roster_profiles(self.guild_id)
+        view = discord_bot.StatsConfirmView(
+            records=[{"player_name": "FirstPlayer", "kills": 4}],
+            img_hash="manual-assignment-test",
+            guild_id=self.guild_id,
+            message=_ReviewMessage(),
+            place_str="#1",
+            map_name="Erangel",
+            roster_profiles=roster,
+        )
+        selector = next(item for item in view.children if isinstance(item, discord.ui.Select))
+        selector._values = [str(second["id"])]
+        interaction = self._create_edit_interaction(999)
+
+        await selector.callback(interaction)
+
+        self.assertEqual(view.assignments, [second["id"]])
+        self.assertEqual(view.manual_assignments, {0})
+        save_interaction = self._create_edit_interaction(999)
+        with patch.object(discord_bot, "db", self.database):
+            await view._do_save(save_interaction)
+        saved = self.database.get_recent_stats(self.guild_id, limit=1)[0]
+        self.assertEqual(saved["player_name"], "SecondPlayer")
+        self.assertEqual(saved["roster_profile_id"], second["id"])
+
+    async def test_stats_edit_reselects_changed_names_and_preserves_manual_choice(self):
+        profiles = [
+            self._create_profile(user_id=1014, ign="FirstPlayer", uid="101010114"),
+            self._create_profile(user_id=1015, ign="SecondPlayer", uid="101010115"),
+            self._create_profile(user_id=1016, ign="ThirdPlayer", uid="101010116"),
+        ]
+        for profile in profiles:
+            self.database.review_roster_profile(
+                self.guild_id,
+                profile["discord_user_id"],
+                "approved",
+            )
+        roster = self.database.get_approved_roster_profiles(self.guild_id)
+        view = discord_bot.StatsConfirmView(
+            records=[
+                {"player_name": "FirstPlayer", "kills": 1},
+                {"player_name": "Unknown", "kills": 2},
+            ],
+            img_hash="edit-reselection-test",
+            guild_id=self.guild_id,
+            message=_ReviewMessage(),
+            place_str="#1",
+            map_name="Erangel",
+            roster_profiles=roster,
+        )
+        selector = next(item for item in view.children if isinstance(item, discord.ui.Select))
+        selector._values = [str(profiles[1]["id"])]
+        await selector.callback(self._create_edit_interaction(999))
+
+        modal = discord_bot.StatsEditModal(view.records, view)
+        modal.children[0]._value = "FirstPlayer 1"
+        modal.children[1]._value = "ThirdPlayer 3"
+        await modal.on_submit(self._create_edit_interaction(999))
+
+        self.assertEqual(
+            view.assignments,
+            [profiles[1]["id"], profiles[2]["id"]],
+        )
+
+    async def test_stats_save_without_approved_roster_keeps_existing_behavior(self):
+        view = discord_bot.StatsConfirmView(
+            records=[
+                {"guild_id": self.guild_id, "player_name": "AnyPlayer", "kills": 4},
+                {"guild_id": self.guild_id, "player_name": "AnotherPlayer", "kills": 2},
+            ],
+            img_hash="no-roster-save-test",
+            guild_id=self.guild_id,
+            message=_ReviewMessage(),
+            place_str="#1",
+            map_name="Erangel",
+            roster_profiles=[],
+        )
+        interaction = self._create_edit_interaction(999)
 
         with patch.object(discord_bot, "db", self.database):
             await view._do_save(interaction)
 
-        saved = self.database.get_recent_stats(self.guild_id, 10)
-        self.assertEqual(len(saved), 1)
-        self.assertEqual(saved[0]["player_name"], "HLS.Rostered")
-        self.assertEqual(view.records, [records[0]])
+        saved = self.database.get_recent_stats(self.guild_id, limit=10)
+        self.assertEqual(len(saved), 2)
+        self.assertTrue(all(record["roster_profile_id"] is None for record in saved))
+
+    async def test_stats_review_blocks_duplicate_roster_assignment(self):
+        profile = self._create_profile(
+            user_id=1013,
+            ign="DuplicateTarget",
+            uid="101010113",
+        )
+        self.database.review_roster_profile(
+            self.guild_id,
+            profile["discord_user_id"],
+            "approved",
+        )
+        roster = self.database.get_approved_roster_profiles(self.guild_id)
+        view = discord_bot.StatsConfirmView(
+            records=[
+                {"player_name": "DuplicateTarget", "kills": 1},
+                {"player_name": "DuplicateTarget", "kills": 2},
+            ],
+            img_hash="duplicate-assignment-test",
+            guild_id=self.guild_id,
+            message=_ReviewMessage(),
+            place_str="#1",
+            map_name="Erangel",
+            roster_profiles=roster,
+        )
+        view.assignments = [profile["id"], profile["id"]]
+        interaction = self._create_edit_interaction(999)
+
+        await view._do_save(interaction)
+
+        self.assertIn("DuplicateTarget", interaction.response.edited["content"])
+        self.assertFalse(view._saved)
+        self.assertFalse(self.database.is_stats_duplicate("duplicate-assignment-test", self.guild_id))
+        self.assertEqual(self.database.get_recent_stats(self.guild_id, 10), [])
+
+    async def test_eight_extracted_rows_save_four_roster_assignments_and_skip_four(self):
+        for index in range(4):
+            profile = self._create_profile(
+                user_id=1020 + index,
+                ign=f"RosterPlayer{index}",
+                uid=f"20202020{index}",
+            )
+            self.database.review_roster_profile(
+                self.guild_id,
+                profile["discord_user_id"],
+                "approved",
+            )
+        roster = self.database.get_approved_roster_profiles(self.guild_id)
+        records = [
+            {
+                "guild_id": self.guild_id,
+                "player_name": f"RosterPlayer{index}" if index < 4 else f"Unknown{index}",
+                "kills": index,
+                "placement": 1,
+            }
+            for index in range(8)
+        ]
+        view = discord_bot.StatsConfirmView(
+            records=records,
+            img_hash="eight-row-review-test",
+            guild_id=self.guild_id,
+            message=_ReviewMessage(),
+            place_str="#1",
+            map_name="Erangel",
+            roster_profiles=roster,
+            overflow_count=4,
+        )
+        interaction = self._create_edit_interaction(999)
+
+        with patch.object(discord_bot, "db", self.database):
+            await view._do_save(interaction)
+
+        raw_rows = self.database._db.execute(
+            "SELECT player_name, roster_profile_id FROM player_stats WHERE guild_id=?",
+            (self.guild_id,),
+        ).fetchall()
+        self.assertEqual(len(raw_rows), 4)
+        self.assertEqual(
+            {row["roster_profile_id"] for row in raw_rows},
+            {profile["id"] for profile in roster},
+        )
+        self.assertIn("Saved 4 player(s); skipped 4 row(s).", interaction.response.edited["content"])
+        self.assertIn("Upload the other 4 player row(s) separately.", interaction.response.edited["content"])
+        self.assertTrue(self.database.is_stats_duplicate("eight-row-review-test", self.guild_id))
+
+    async def test_stats_api_roster_only_filters_linked_and_legacy_rows(self):
+        approved = self._create_profile(
+            user_id=1030,
+            ign="[HLS] Legacy.Player",
+            uid="303030303",
+        )
+        self.database.review_roster_profile(
+            self.guild_id,
+            approved["discord_user_id"],
+            "approved",
+        )
+        profile = self.database.get_approved_roster_profiles(self.guild_id)[0]
+        self.database.save_player_stat(
+            {
+                "guild_id": self.guild_id,
+                "player_name": "hls_legacyplayer",
+                "kills": 4,
+                "image_hash": "legacy-stats",
+            }
+        )
+        self.database.save_player_stat(
+            {
+                "guild_id": self.guild_id,
+                "player_name": "UnregisteredPlayer",
+                "kills": 9,
+                "image_hash": "unlinked-stats",
+            }
+        )
+
+        with patch.object(dashboard, "db", self.database):
+            api_leaderboard = await dashboard.get_leaderboard(self.guild_id)
+            api_recent = await dashboard.get_recent_stats(self.guild_id, limit=10)
+            api_summary = await dashboard.get_stats_summary(self.guild_id)
+        leaderboard = api_leaderboard["players"]
+        recent = api_recent["records"]
+        all_players = self.database.get_player_leaderboard(
+            self.guild_id,
+            roster_only=False,
+        )
+
+        self.assertEqual(api_summary["players_tracked"], 1)
+        self.assertEqual(len(leaderboard), 1)
+        self.assertEqual(leaderboard[0]["player_name"], "[HLS] Legacy.Player")
+        self.assertEqual(leaderboard[0]["roster_profile_id"], profile["id"])
+        self.assertEqual(leaderboard[0]["roster_uid"], "303030303")
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["roster_profile_id"], profile["id"])
+        self.assertEqual(len(all_players), 2)
+
+    async def test_stats_select_caps_options_and_prioritizes_matched_team(self):
+        roster = [
+            {
+                "id": index + 1,
+                "ign": f"{team_tag}Player{index:02d}",
+                "uid": str(400000000 + index),
+                "team_tag": team_tag,
+                "role": "starter",
+            }
+            for index, team_tag in enumerate(
+                ["HLS", "HLS"] + ["ABC"] * 28
+            )
+        ]
+        view = discord_bot.StatsConfirmView(
+            records=[{"player_name": "HLS-Player00", "kills": 1}],
+            img_hash="roster-option-cap-test",
+            guild_id=self.guild_id,
+            message=_ReviewMessage(),
+            place_str="#1",
+            map_name="Erangel",
+            roster_profiles=roster,
+        )
+        selector = next(item for item in view.children if isinstance(item, discord.ui.Select))
+
+        self.assertEqual(len(selector.options), 25)
+        self.assertEqual(
+            [option.value for option in selector.options[1:3]],
+            ["1", "2"],
+        )
+
+    async def test_player_stats_migration_adds_roster_profile_id_to_old_table(self):
+        old_path = Path(self.temp_dir.name) / "old-stats.db"
+        old_connection = sqlite3.connect(old_path)
+        old_connection.executescript(
+            """
+            CREATE TABLE player_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                player_name TEXT NOT NULL,
+                kills INTEGER DEFAULT 0,
+                assists INTEGER DEFAULT 0,
+                damage INTEGER DEFAULT 0,
+                survived REAL DEFAULT NULL,
+                health_restored INTEGER DEFAULT NULL,
+                rescue INTEGER DEFAULT NULL,
+                recall INTEGER DEFAULT NULL,
+                placement INTEGER DEFAULT 0,
+                total_teams INTEGER DEFAULT 0,
+                map_name TEXT DEFAULT '',
+                game_mode TEXT DEFAULT '',
+                is_mvp INTEGER DEFAULT 0,
+                rating REAL DEFAULT NULL,
+                confidence REAL DEFAULT 0.0,
+                screenshot_type TEXT DEFAULT '',
+                image_hash TEXT DEFAULT '',
+                detected_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        old_connection.close()
+        legacy_database = Database(str(old_path))
+        legacy_database.connect()
+        columns = {
+            row["name"]
+            for row in legacy_database._db.execute("PRAGMA table_info(player_stats)")
+        }
+        legacy_database.close()
+
+        self.assertIn("roster_profile_id", columns)
 
     async def test_reupload_after_removal_creates_new_pending_profile(self):
         self._create_profile(

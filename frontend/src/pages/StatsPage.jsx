@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useState, useEffect, useRef } from 'react'
-import { getLeaderboard, getRecentStats, getRoster } from '../utils/api.js'
+import { getLeaderboard, getRecentStats } from '../utils/api.js'
 import { fmtDateTime } from '../utils/format.js'
 
 const StatsPlayerCharts = lazy(() => import('../components/StatsPlayerCharts.jsx'))
@@ -36,13 +36,6 @@ const MAPS     = ['All', 'Erangel', 'Miramar', 'Rondo', 'Sanhok', 'Vikendi', 'Nu
 const MAP_COLOR = {
   Erangel:'#4caf93', Miramar:'#d4a843', Rondo:'#7c6fcd',
   Sanhok:'#68a85e', Vikendi:'#7fb5c8', Nusa:'#e07060', Livik:'#a0c878',
-}
-
-function normalizeIgn(name) {
-  return String(name || '')
-    .normalize('NFKD')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '')
 }
 
 function getKd(player) {
@@ -223,12 +216,12 @@ export default function StatsPage() {
   const [guildId,     setGuildId]     = useState(() => safeGet(GUILD_KEY))
   const [inputId,     setInputId]     = useState(() => safeGet(GUILD_KEY))
   const [days,        setDays]        = useState(7)
+  const [showAllPlayers, setShowAllPlayers] = useState(false)
   const [tab,         setTab]         = useState('leaderboard')
   const [mapFilter,   setMapFilter]   = useState('All')
   const [sortBy,      setSortBy]      = useState('rating')
   const [leaderboard, setLeaderboard] = useState([])
   const [recent,      setRecent]      = useState([])
-  const [roster,      setRoster]      = useState([])
   const [loading,     setLoading]     = useState(false)
   const [error,       setError]       = useState('')
   const [search,      setSearch]      = useState('')
@@ -236,38 +229,30 @@ export default function StatsPage() {
   const [aliases,     setAliases]     = useState(() => safeJSON(aliasesKey(safeGet(GUILD_KEY)), {}))
   const [fuzzyQ,      setFuzzyQ]      = useState([])
 
-  const fetchData = useCallback(async (gid, d) => {
+  const fetchData = useCallback(async (gid, d, showAll = false) => {
     if (!gid) return
     setLoading(true)
     setError('')
     try {
       const [lbRes, recRes] = await Promise.all([
-        getLeaderboard(gid, d),
-        getRecentStats(gid, 50),
+        getLeaderboard(gid, d, !showAll),
+        getRecentStats(gid, 50, !showAll),
       ])
       setLeaderboard(lbRes?.data?.players || [])
       setRecent(recRes?.data?.records   || [])
     } catch (e) {
       console.error('Stats fetch failed:', e)
       setError(e.response?.data?.detail || e.message || 'Unable to load player stats.')
-    }
-    try {
-      const rosterResponse = await getRoster(gid)
-      setRoster((rosterResponse?.data?.teams || []).flatMap(team =>
-        (team.players || []).map(player => ({ ...player, team_tag: team.team_tag }))
-      ))
-    } catch {
-      setRoster([])
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    fetchData(guildId, days)
-    const t = setInterval(() => fetchData(guildId, days), 15000)
+    fetchData(guildId, days, showAllPlayers)
+    const t = setInterval(() => fetchData(guildId, days, showAllPlayers), 15000)
     return () => clearInterval(t)
-  }, [guildId, days, fetchData])
+  }, [guildId, days, showAllPlayers, fetchData])
 
   // Load aliases from localStorage (shared with TeamPerformancePage)
   useEffect(() => {
@@ -368,9 +353,6 @@ export default function StatsPage() {
     .map(r => ({ ...r, player_name: resolve(r.player_name), _originalName: r.player_name }))
     .filter(r => mapFilter === 'All' || r.map_name === mapFilter)
 
-  const rosterByIgn = new Map(
-    roster.map(player => [normalizeIgn(player.ign), player]).filter(([ign]) => ign)
-  )
   const playerCards = filteredLb.map(player => {
     const playerRecent = recent.filter(record => {
       const resolvedName = resolve(record.player_name)
@@ -385,7 +367,14 @@ export default function StatsPage() {
     return {
       ...player,
       _kd: getKd(player),
-      _roster: rosterByIgn.get(normalizeIgn(player.player_name)) || null,
+      _roster: player.roster_profile_id != null
+        ? {
+            id: player.roster_profile_id,
+            uid: player.roster_uid,
+            role: player.roster_role,
+            team_tag: player.roster_team_tag,
+          }
+        : null,
       _avgSurvival: averageSurvival,
       _recent: playerRecent,
     }
@@ -447,7 +436,7 @@ export default function StatsPage() {
           </label>
           <button type="button" onClick={apply} disabled={!inputId.trim()}
             className="rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">Load server</button>
-          <button type="button" onClick={() => fetchData(guildId, days)} disabled={!guildId || loading}
+          <button type="button" onClick={() => fetchData(guildId, days, showAllPlayers)} disabled={!guildId || loading}
             className="rounded-lg border border-[#29304a] px-4 py-2.5 text-sm font-semibold text-[#aeb5d2] hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-50">Refresh</button>
         </div>
       </header>
@@ -507,6 +496,16 @@ export default function StatsPage() {
                 </button>
               ))}
             </div>
+
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-[#aeb5d2] sm:ml-auto">
+              <input
+                type="checkbox"
+                checked={showAllPlayers}
+                onChange={event => setShowAllPlayers(event.target.checked)}
+                className="accent-cyan-300"
+              />
+              Show all players
+            </label>
 
             {tab === 'leaderboard' && (
               <>

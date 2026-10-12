@@ -18,9 +18,9 @@ export const getRoster      = (guildId) => api.get('/roster', { params: { guild_
 export const getLogs        = (lines = 150) => api.get(`/logs?lines=${lines}`)
 
 // Stats endpoints
-export const getLeaderboard   = (guildId, days = 7)        => api.get(`/stats/${guildId}/leaderboard?days=${days}`)
-export const getRecentStats   = (guildId, days = 7)        => api.get(`/stats/${guildId}/recent?limit=100`)
-export const getStatsSummary  = (guildId)                  => api.get(`/stats/${guildId}/summary`)
+export const getLeaderboard   = (guildId, days = 7, rosterOnly = true) => api.get(`/stats/${guildId}/leaderboard`, { params: { days, roster_only: rosterOnly } })
+export const getRecentStats   = (guildId, limit = 20, rosterOnly = true) => api.get(`/stats/${guildId}/recent`, { params: { limit, roster_only: rosterOnly } })
+export const getStatsSummary  = (guildId, rosterOnly = true) => api.get(`/stats/${guildId}/summary`, { params: { roster_only: rosterOnly } })
 export const getPlayerHistory = (guildId, player, days=30) => api.get(`/stats/${guildId}/leaderboard?days=${days}`)
 
 export default api

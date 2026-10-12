@@ -110,26 +110,54 @@ async def get_logs(lines: int = 150):
 # ── Stats endpoints ────────────────────────────────────────────────────
 
 @app.get("/stats/{guild_id}/leaderboard")
-async def get_leaderboard(guild_id: int, days: int = 7):
+async def get_leaderboard(
+    guild_id: int,
+    days: int = 7,
+    roster_only: bool = True,
+):
     if not 1 <= days <= 30:
         raise HTTPException(400, "days must be 1-30")
-    rows = db.get_player_leaderboard(guild_id, days=days)
+    rows = db.get_player_leaderboard(
+        guild_id,
+        days=days,
+        roster_only=roster_only,
+    )
     return {"guild_id": guild_id, "days": days, "count": len(rows), "players": rows}
 
 
 @app.get("/stats/{guild_id}/recent")
-async def get_recent_stats(guild_id: int, limit: int = 20):
+async def get_recent_stats(
+    guild_id: int,
+    limit: int = 20,
+    roster_only: bool = True,
+):
     if not 1 <= limit <= 100:
         raise HTTPException(400, "limit must be 1-100")
-    rows = db.get_recent_stats(guild_id, limit=limit)
+    rows = db.get_recent_stats(
+        guild_id,
+        limit=limit,
+        roster_only=roster_only,
+    )
     return {"guild_id": guild_id, "count": len(rows), "records": rows}
 
 
 @app.get("/stats/{guild_id}/summary")
-async def get_stats_summary(guild_id: int):
-    rows_7  = db.get_player_leaderboard(guild_id, days=7)
-    rows_30 = db.get_player_leaderboard(guild_id, days=30)
-    recent  = db.get_recent_stats(guild_id, limit=1)
+async def get_stats_summary(guild_id: int, roster_only: bool = True):
+    rows_7 = db.get_player_leaderboard(
+        guild_id,
+        days=7,
+        roster_only=roster_only,
+    )
+    rows_30 = db.get_player_leaderboard(
+        guild_id,
+        days=30,
+        roster_only=roster_only,
+    )
+    recent = db.get_recent_stats(
+        guild_id,
+        limit=1,
+        roster_only=roster_only,
+    )
     return {
         "guild_id":        guild_id,
         "players_tracked": len(rows_30),

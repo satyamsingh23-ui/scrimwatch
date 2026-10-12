@@ -15,6 +15,7 @@ Improvements over original:
 """
 
 import asyncio
+import difflib
 import os
 import re
 import unicodedata
@@ -1333,7 +1334,11 @@ async def cmd_help(ctx: commands.Context) -> None:
 # STATS CONFIRM / EDIT UI
 # ═════════════════════════════════════════════════════════════════════════
 
-def _build_stats_embed(records: list[dict], saved: bool = False) -> discord.Embed:
+def _build_stats_embed(
+    records: list[dict],
+    saved: bool = False,
+    overflow_count: int = 0,
+) -> discord.Embed:
     """Build the stats preview/saved embed from a records list."""
     r0        = records[0]
     placement = r0.get("placement", 0)
@@ -1354,7 +1359,10 @@ def _build_stats_embed(records: list[dict], saved: bool = False) -> discord.Embe
         color = discord.Color.gold() if placement and placement <= 3 else discord.Color.blurple()
 
     embed = discord.Embed(title=title, color=color, timestamp=datetime.utcnow())
-    embed.set_footer(text=f"{map_name} • {len(records)} player(s)")
+    footer = f"{map_name} • {len(records)} player(s)"
+    if overflow_count:
+        footer += f" • {overflow_count} more row(s): upload separately"
+    embed.set_footer(text=footer)
 
     for r in records:
         mvp_tag = " ⭐ MVP" if r.get("is_mvp") else ""
@@ -1368,6 +1376,60 @@ def _build_stats_embed(records: list[dict], saved: bool = False) -> discord.Embe
         embed.add_field(name=f"{r['player_name']}{mvp_tag}", value=value, inline=False)
 
     return embed
+
+
+def _roster_match_score(name: str, roster_name: str) -> float:
+    normalized_name = _normalize_player_ign(name)
+    normalized_roster_name = _normalize_player_ign(roster_name)
+    if not normalized_name or not normalized_roster_name:
+        return 0.0
+    return difflib.SequenceMatcher(
+        None,
+        normalized_name,
+        normalized_roster_name,
+    ).ratio()
+
+
+class StatsRosterSelect(discord.ui.Select):
+    def __init__(
+        self,
+        parent_view: "StatsConfirmView",
+        record_index: int,
+        options: list[discord.SelectOption],
+        selected_id: int | None,
+    ):
+        for option in options:
+            option.default = option.value == (
+                str(selected_id) if selected_id is not None else "unknown"
+            )
+        super().__init__(
+            placeholder=(
+                f"Player {record_index + 1}: "
+                f"{parent_view.records[record_index].get('player_name', '')}"
+            )[:150],
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=record_index,
+        )
+        self.parent_view = parent_view
+        self.record_index = record_index
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        value = self.values[0]
+        self.parent_view.assignments[self.record_index] = (
+            int(value) if value != "unknown" else None
+        )
+        self.parent_view.manual_assignments.add(self.record_index)
+        self.parent_view._refresh_option_defaults()
+        await interaction.response.edit_message(
+            content=None,
+            embed=_build_stats_embed(
+                self.parent_view.records,
+                overflow_count=self.parent_view.overflow_count,
+            ),
+            view=self.parent_view,
+        )
 
 
 class StatsEditModal(discord.ui.Modal, title="✏️ Edit Player Names & Kills"):
@@ -1393,20 +1455,29 @@ class StatsEditModal(discord.ui.Modal, title="✏️ Edit Player Names & Kills")
             ))
 
     async def on_submit(self, interaction: discord.Interaction):
+        changed_names = set()
         for i, item in enumerate(self.children):
             if i >= len(self._records):
                 break
+            old_name = self._records[i]["player_name"]
             parts = item.value.strip().rsplit(None, 1)   # split on last whitespace
             if len(parts) == 2 and parts[1].isdigit():
                 self._records[i]["player_name"] = parts[0].strip()
                 self._records[i]["kills"]        = int(parts[1])
             else:
                 self._records[i]["player_name"] = item.value.strip()
+            if self._records[i]["player_name"] != old_name:
+                changed_names.add(i)
 
-        # Refresh the parent view with updated records
         self._parent_view.records = self._records
-        embed = _build_stats_embed(self._records)
+        if changed_names:
+            self._parent_view._preselect_roster_players()
+        embed = _build_stats_embed(
+            self._records,
+            overflow_count=self._parent_view.overflow_count,
+        )
         embed.set_footer(text=embed.footer.text + "  ·  Changes applied — confirm to save")
+        self._parent_view._refresh_option_defaults()
         await interaction.response.edit_message(embed=embed, view=self._parent_view)
 
 
@@ -1415,7 +1486,7 @@ class StatsConfirmView(discord.ui.View):
     Buttons shown under the stats preview embed.
     ✅ Save  —  saves to DB
     ✏️ Edit  —  opens StatsEditModal
-    Auto-saves after timeout so a missed review never blocks the record.
+    Unreviewed stats are saved after timeout when assignments are unambiguous.
     """
 
     def __init__(
@@ -1426,40 +1497,251 @@ class StatsConfirmView(discord.ui.View):
         message:   discord.Message,
         place_str: str,
         map_name:  str,
+        roster_profiles: list[dict] | None = None,
+        overflow_count: int = 0,
     ):
-        super().__init__(timeout=120)   # 2 min window
-        self.records   = records
-        self.img_hash  = img_hash
-        self.guild_id  = guild_id
-        self._message  = message
+        super().__init__(timeout=120)
+        self.records = records[:4]
+        self.img_hash = img_hash
+        self.guild_id = guild_id
+        self._message = message
         self._place_str = place_str
-        self._map_name  = map_name
-        self._saved     = False
+        self._map_name = map_name
+        self.overflow_count = overflow_count
+        self._saved = False
+        self.roster_profiles = (
+            roster_profiles
+            if roster_profiles is not None
+            else db.get_approved_roster_profiles(guild_id)
+        )
+        self._roster_options = self._build_roster_options()
+        self.assignments: list[int | None] = [None] * len(self.records)
+        self.manual_assignments: set[int] = set()
+        self._preselect_roster_players()
+        self._build_components()
+
+    def _build_roster_options(self) -> list[discord.SelectOption]:
+        if not self.roster_profiles:
+            return []
+
+        team_scores: dict[str, list[float]] = {}
+        for record in self.records:
+            candidates = [
+                (
+                    _roster_match_score(record.get("player_name", ""), profile["ign"]),
+                    str(profile.get("team_tag") or "").casefold(),
+                )
+                for profile in self.roster_profiles
+            ]
+            if candidates:
+                score, team_tag = max(candidates, key=lambda candidate: candidate[0])
+                if score >= 0.85 and team_tag:
+                    team_scores.setdefault(team_tag, []).append(score)
+        preferred_team = max(
+            team_scores,
+            key=lambda tag: (len(team_scores[tag]), sum(team_scores[tag]), tag),
+            default=None,
+        )
+
+        ordered_profiles = sorted(
+            self.roster_profiles,
+            key=lambda profile: (
+                0
+                if preferred_team
+                and str(profile.get("team_tag") or "").casefold() == preferred_team
+                else 1,
+                (profile.get("ign") or "").casefold(),
+                str(profile.get("uid") or ""),
+            ),
+        )[:24]
+        options = [
+            discord.SelectOption(
+                label="Unknown / not on roster",
+                value="unknown",
+                description="Do not save this extracted player",
+            )
+        ]
+        for profile in ordered_profiles:
+            uid = str(profile.get("uid") or "")
+            ign = str(profile.get("ign") or "")
+            label = f"{ign[:max(1, 96 - len(uid))]} ({uid})"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=str(profile["id"]),
+                    description=(
+                        f"{profile.get('team_tag') or 'Unassigned'} · "
+                        f"{profile.get('role') or 'starter'}"
+                    )[:100],
+                )
+            )
+        return options
+
+    def _preselect_roster_players(self) -> None:
+        if not self.roster_profiles:
+            return
+        available_ids = {
+            int(option.value)
+            for option in self._roster_options
+            if option.value != "unknown"
+        }
+        reserved = {
+            profile_id
+            for index, profile_id in enumerate(self.assignments)
+            if index in self.manual_assignments and profile_id is not None
+        }
+        for index in range(len(self.assignments)):
+            if index not in self.manual_assignments:
+                self.assignments[index] = None
+
+        candidates = []
+        for index, record in enumerate(self.records):
+            if index in self.manual_assignments:
+                continue
+            for profile in self.roster_profiles:
+                profile_id = int(profile["id"])
+                if profile_id not in available_ids:
+                    continue
+                score = _roster_match_score(
+                    record.get("player_name", ""),
+                    profile.get("ign", ""),
+                )
+                if score >= 0.85:
+                    candidates.append((score, index, profile_id))
+
+        assigned = set(reserved)
+        for _, index, profile_id in sorted(candidates, reverse=True):
+            if self.assignments[index] is None and profile_id not in assigned:
+                self.assignments[index] = profile_id
+                assigned.add(profile_id)
+
+    def _build_components(self) -> None:
+        self.clear_items()
+        if self.roster_profiles:
+            for index in range(len(self.records)):
+                self.add_item(
+                    StatsRosterSelect(
+                        self,
+                        index,
+                        [
+                            discord.SelectOption(
+                                label=option.label,
+                                value=option.value,
+                                description=option.description,
+                                default=option.default,
+                            )
+                            for option in self._roster_options
+                        ],
+                        self.assignments[index],
+                    )
+                )
+        save_button = discord.ui.Button(
+            label="✅ Save",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            row=4,
+        )
+        save_button.callback = self.save_btn
+        self.add_item(save_button)
+        edit_button = discord.ui.Button(
+            label="✏️ Edit Names / Kills",
+            style=discord.ButtonStyle.secondary,
+            emoji="✏️",
+            row=4,
+        )
+        edit_button.callback = self.edit_btn
+        self.add_item(edit_button)
+
+    def _refresh_option_defaults(self) -> None:
+        for item in self.children:
+            if isinstance(item, StatsRosterSelect):
+                selected_id = self.assignments[item.record_index]
+                for option in item.options:
+                    option.default = option.value == (
+                        str(selected_id) if selected_id is not None else "unknown"
+                    )
+
+    def _duplicate_assignment(self) -> str | None:
+        assigned_ids = [
+            profile_id for profile_id in self.assignments if profile_id is not None
+        ]
+        duplicate_ids = {
+            profile_id for profile_id in assigned_ids
+            if assigned_ids.count(profile_id) > 1
+        }
+        if not duplicate_ids:
+            return None
+        duplicate_id = next(iter(duplicate_ids))
+        profile = next(
+            profile for profile in self.roster_profiles
+            if int(profile["id"]) == duplicate_id
+        )
+        return f"{profile['ign']} ({profile['uid']})"
 
     async def _do_save(self, interaction: discord.Interaction | None):
         if self._saved:
             return
-        self._saved = True
+        duplicate = self._duplicate_assignment()
+        if duplicate:
+            message = (
+                f"{duplicate} is assigned to more than one row. "
+                "Choose a different player before saving."
+            )
+            if interaction:
+                await interaction.response.edit_message(
+                    content=message,
+                    embed=_build_stats_embed(
+                        self.records,
+                        overflow_count=self.overflow_count,
+                    ),
+                    view=self,
+                )
+            else:
+                log.warning(f"Stats auto-save blocked by duplicate roster assignment: {duplicate}")
+                try:
+                    await self._bot_msg.edit(content=message, view=None)
+                except discord.HTTPException as exc:
+                    log.warning(f"Could not report duplicate stats assignment: {exc}")
+            return
+
         self.stop()
 
         try:
-            approved_igns = {
-                _normalize_player_ign(profile["ign"])
-                for profile in db.get_approved_roster_profiles(self.guild_id)
-                if profile.get("ign")
-            }
-            eligible_records = [
-                record for record in self.records
-                if _normalize_player_ign(record.get("player_name", "")) in approved_igns
-            ]
-            skipped_count = len(self.records) - len(eligible_records)
-            self.records = eligible_records
+            if self.roster_profiles:
+                roster_by_id = {
+                    int(profile["id"]): profile for profile in self.roster_profiles
+                }
+                eligible_records = []
+                for index, record in enumerate(self.records):
+                    profile_id = self.assignments[index]
+                    if profile_id is None:
+                        continue
+                    profile = roster_by_id[profile_id]
+                    eligible_records.append(
+                        {
+                            **record,
+                            "player_name": profile["ign"],
+                            "roster_profile_id": profile_id,
+                            "guild_id": self.guild_id,
+                        }
+                    )
+                skipped_count = (
+                    len(self.records) - len(eligible_records) + self.overflow_count
+                )
+            else:
+                eligible_records = [
+                    {**record, "roster_profile_id": None}
+                    for record in self.records
+                ]
+                skipped_count = self.overflow_count
             if eligible_records:
                 db.save_player_stats(eligible_records)
             db.mark_stats_processed(self.img_hash, self.guild_id)
+            self._saved = True
+            self.records = eligible_records
             log.info(
-                f"Stats: saved {len(eligible_records)} rostered players, "
-                f"skipped {skipped_count} non-rostered players | "
+                f"Stats: saved {len(eligible_records)} players, "
+                f"skipped {skipped_count} rows | "
                 f"{self._place_str} {self._map_name} | "
                 f"guild={self.guild_id} | hash={self.img_hash[:12]}"
             )
@@ -1469,50 +1751,50 @@ class StatsConfirmView(discord.ui.View):
                 await interaction.response.edit_message(
                     content="❌ DB save failed — check logs.", view=None
                 )
-            return
-
-        if not eligible_records:
-            if interaction:
-                await interaction.response.edit_message(
-                    content=(
-                        "No parsed players matched the approved roster. "
-                        "No stats were saved."
-                    ),
-                    embed=None,
-                    view=None,
-                )
             else:
                 try:
                     await self._bot_msg.edit(
-                        content=(
-                            "No parsed players matched the approved roster. "
-                            "No stats were saved."
-                        ),
+                        content="❌ DB save failed — check logs.",
                         embed=None,
                         view=None,
-                )
-                except discord.HTTPException as exc:
-                    log.warning(
-                        f"Could not update stats message after roster filtering: {exc}"
                     )
+                except discord.HTTPException as update_exc:
+                    log.warning(f"Could not report stats save failure: {update_exc}")
             return
 
-        embed = _build_stats_embed(self.records, saved=True)
+        content_parts = [
+            f"Saved {len(eligible_records)} player(s); skipped {skipped_count} row(s)."
+        ]
+        if self.overflow_count:
+            content_parts.append(
+                f"Upload the other {self.overflow_count} player row(s) separately."
+            )
+        content = " ".join(content_parts)
+        embed = (
+            _build_stats_embed(self.records, saved=True)
+            if self.records
+            else None
+        )
         if interaction:
-            await interaction.response.edit_message(embed=embed, view=None)
+            await interaction.response.edit_message(
+                content=content,
+                embed=embed,
+                view=None,
+            )
         else:
-            # Timeout auto-save — edit the existing bot message
             try:
-                await self._bot_msg.edit(embed=embed, view=None)
-            except Exception:
-                pass
+                await self._bot_msg.edit(
+                    content=content,
+                    embed=embed,
+                    view=None,
+                )
+            except discord.HTTPException as exc:
+                log.warning(f"Could not update saved stats review card: {exc}")
 
-    @discord.ui.button(label="✅ Save", style=discord.ButtonStyle.success, emoji="✅")
-    async def save_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def save_btn(self, interaction: discord.Interaction):
         await self._do_save(interaction)
 
-    @discord.ui.button(label="✏️ Edit Names / Kills", style=discord.ButtonStyle.secondary, emoji="✏️")
-    async def edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def edit_btn(self, interaction: discord.Interaction):
         modal = StatsEditModal(self.records, self)
         await interaction.response.send_modal(modal)
 
@@ -1634,6 +1916,17 @@ async def _handle_stats_screenshot(
         )
         return
 
+    overflow_count = max(0, len(records) - 4)
+    records = records[:4]
+    try:
+        roster_profiles = db.get_approved_roster_profiles(guild_id)
+    except Exception as exc:
+        log.error(f"Stats: could not load approved roster | guild={guild_id} | error={exc}")
+        await message.channel.send(
+            "❌ Could not load the approved roster for review. Please try this screenshot again."
+        )
+        return
+
     # ── Build preview embed + confirm view (do NOT save yet) ──────────
     r0        = records[0]
     placement = r0.get("placement", 0)
@@ -1644,8 +1937,10 @@ async def _handle_stats_screenshot(
     view = StatsConfirmView(
         records=records, img_hash=img_hash, guild_id=guild_id,
         message=message, place_str=place_str, map_name=map_name,
+        roster_profiles=roster_profiles,
+        overflow_count=overflow_count,
     )
-    embed = _build_stats_embed(records)
+    embed = _build_stats_embed(records, overflow_count=overflow_count)
 
     await _safe_remove_reaction("🔍")
     try:

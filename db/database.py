@@ -11,6 +11,7 @@ All public functions are coroutines safe to call from the event loop.
 """
 
 import sqlite3
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,11 @@ from utils.logger import get_logger
 from utils.roster import extract_team_tag
 
 log = get_logger("database")
+
+
+def _normalize_ign(value: str | None) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    return "".join(char for char in normalized if char.isascii() and char.isalnum())
 
 
 # ── Schema ────────────────────────────────────────────────────────────────
@@ -76,6 +82,7 @@ CREATE TABLE IF NOT EXISTS player_stats (
     game_mode        TEXT    DEFAULT '',
     is_mvp           INTEGER DEFAULT 0,
     rating           REAL    DEFAULT NULL,
+    roster_profile_id INTEGER DEFAULT NULL,
     confidence       REAL    DEFAULT 0.0,
     screenshot_type  TEXT    DEFAULT '',
     image_hash       TEXT    DEFAULT '',
@@ -165,6 +172,7 @@ class Database:
             check_same_thread=False,
             detect_types=sqlite3.PARSE_DECLTYPES,
         )
+        self._conn.create_function("normalize_ign", 1, _normalize_ign, deterministic=True)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
@@ -198,6 +206,21 @@ class Database:
             )
             self._conn.commit()
             log.info("DB migrated: added column roster_profiles.discord_username")
+        stats_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(player_stats)")
+        }
+        if "roster_profile_id" not in stats_columns:
+            self._conn.execute(
+                "ALTER TABLE player_stats ADD COLUMN roster_profile_id INTEGER DEFAULT NULL"
+            )
+            self._conn.commit()
+            log.info("DB migrated: added column player_stats.roster_profile_id")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stats_roster_profile "
+            "ON player_stats(roster_profile_id)"
+        )
+        self._conn.commit()
         log.info(f"Database connected: {self._path}")
 
     def close(self) -> None:
@@ -536,7 +559,7 @@ class Database:
     def get_approved_roster_profiles(self, guild_id: int) -> list[dict]:
         rows = self._db.execute(
             """
-            SELECT CAST(discord_user_id AS TEXT) AS discord_id,
+            SELECT id, CAST(discord_user_id AS TEXT) AS discord_id,
                    discord_username,
                    discord_display_name AS discord_name,
                    approved_uid AS uid,
@@ -731,8 +754,9 @@ class Database:
                 guild_id, player_name, kills, assists, damage,
                 survived, health_restored, rescue, recall,
                 placement, total_teams, map_name, game_mode, is_mvp,
-                rating, confidence, screenshot_type, image_hash, detected_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                rating, roster_profile_id, confidence, screenshot_type,
+                image_hash, detected_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 record.get("guild_id", 0),
@@ -750,6 +774,7 @@ class Database:
                 record.get("game_mode", ""),
                 int(record.get("is_mvp", False)),
                 record.get("rating"),
+                record.get("roster_profile_id"),
                 record.get("confidence", 0.0),
                 record.get("screenshot_type", ""),
                 record.get("image_hash", ""),
@@ -780,7 +805,12 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_player_leaderboard(self, guild_id: int, days: int = 7) -> list[dict]:
+    def get_player_leaderboard(
+        self,
+        guild_id: int,
+        days: int = 7,
+        roster_only: bool = False,
+    ) -> list[dict]:
         """
         Aggregate per-player stats for leaderboard.
         Returns list sorted by total_kills desc.
@@ -788,8 +818,39 @@ class Database:
         since = (datetime.utcnow() - timedelta(days=days)).isoformat()
         rows = self._db.execute(
             """
+            WITH resolved AS (
+                SELECT stats.*,
+                       COALESCE(
+                           stats.roster_profile_id,
+                           (
+                               SELECT roster.id
+                               FROM roster_profiles AS roster
+                               WHERE roster.guild_id=stats.guild_id
+                                 AND roster.approved_uid IS NOT NULL
+                                 AND normalize_ign(roster.approved_ign)=normalize_ign(stats.player_name)
+                               ORDER BY roster.id
+                               LIMIT 1
+                           )
+                       ) AS resolved_roster_profile_id
+                FROM player_stats AS stats
+                WHERE stats.guild_id=? AND stats.detected_at >= ?
+            ),
+            enriched AS (
+                SELECT resolved.*,
+                       COALESCE(roster.approved_ign, resolved.player_name) AS roster_name,
+                       roster.approved_uid AS roster_uid,
+                       roster.approved_role AS roster_role,
+                       roster.approved_team_tag AS roster_team_tag
+                FROM resolved
+                LEFT JOIN roster_profiles AS roster
+                  ON roster.id=resolved.resolved_roster_profile_id
+            )
             SELECT
-                player_name,
+                MAX(roster_name)      AS player_name,
+                resolved_roster_profile_id AS roster_profile_id,
+                MAX(roster_uid)       AS roster_uid,
+                MAX(roster_role)      AS roster_role,
+                MAX(roster_team_tag)  AS roster_team_tag,
                 COUNT(*)              AS matches,
                 SUM(kills)            AS total_kills,
                 SUM(assists)          AS total_assists,
@@ -800,27 +861,66 @@ class Database:
                 MIN(placement)        AS best_placement,
                 SUM(is_mvp)           AS mvp_count,
                 ROUND(AVG(rating),1)  AS avg_rating
-            FROM player_stats
-            WHERE guild_id=? AND detected_at >= ?
-            GROUP BY player_name
+            FROM enriched
+            WHERE (?=0 OR resolved_roster_profile_id IS NOT NULL)
+            GROUP BY CASE
+                WHEN resolved_roster_profile_id IS NOT NULL
+                    THEN 'roster:' || resolved_roster_profile_id
+                ELSE 'name:' || player_name
+            END
             ORDER BY total_kills DESC
             """,
-            (guild_id, since),
+            (guild_id, since, int(roster_only)),
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_recent_stats(self, guild_id: int, limit: int = 20) -> list[dict]:
+    def get_recent_stats(
+        self,
+        guild_id: int,
+        limit: int = 20,
+        roster_only: bool = False,
+    ) -> list[dict]:
         """Most recently processed screenshots for a guild."""
         rows = self._db.execute(
             """
-            SELECT * FROM player_stats
-            WHERE guild_id=?
+            WITH resolved AS (
+                SELECT stats.*,
+                       COALESCE(
+                           stats.roster_profile_id,
+                           (
+                               SELECT roster.id
+                               FROM roster_profiles AS roster
+                               WHERE roster.guild_id=stats.guild_id
+                                 AND roster.approved_uid IS NOT NULL
+                                 AND normalize_ign(roster.approved_ign)=normalize_ign(stats.player_name)
+                               ORDER BY roster.id
+                               LIMIT 1
+                           )
+                       ) AS resolved_roster_profile_id
+                FROM player_stats AS stats
+                WHERE stats.guild_id=?
+            )
+            SELECT resolved.*,
+                   COALESCE(roster.approved_ign, resolved.player_name) AS roster_name,
+                   roster.approved_uid AS roster_uid,
+                   roster.approved_role AS roster_role,
+                   roster.approved_team_tag AS roster_team_tag
+            FROM resolved
+            LEFT JOIN roster_profiles AS roster
+              ON roster.id=resolved.resolved_roster_profile_id
+            WHERE (?=0 OR resolved_roster_profile_id IS NOT NULL)
             ORDER BY detected_at DESC
             LIMIT ?
             """,
-            (guild_id, limit),
+            (guild_id, int(roster_only), limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        records = []
+        for row in rows:
+            record = dict(row)
+            record["roster_profile_id"] = record.pop("resolved_roster_profile_id")
+            record["player_name"] = record.pop("roster_name")
+            records.append(record)
+        return records
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────

@@ -186,6 +186,7 @@ export default function TeamPerformancePage() {
   const [guildId,    setGuildId]    = useState(() => safeGet(GUILD_KEY))
   const [inputId,    setInputId]    = useState(() => safeGet(GUILD_KEY))
   const [days,       setDays]       = useState(14)
+  const [showAllPlayers, setShowAllPlayers] = useState(false)
   const [teams,      setTeams]      = useState([])
   const [selTeam,    setSelTeam]    = useState(null)
   const [editMode,   setEditMode]   = useState(false)
@@ -223,12 +224,15 @@ export default function TeamPerformancePage() {
   useEffect(() => { if (guildId) safeSet(aliasesKey(guildId), JSON.stringify(aliases)) }, [aliases, guildId])
 
   // Fetch data
-  const fetchData = useCallback(async (gid, d) => {
+  const fetchData = useCallback(async (gid, d, showAll = false) => {
     if (!gid) return
     setDataLoad(true)
     setDataError('')
     try {
-      const [lbRes, recRes] = await Promise.all([getLeaderboard(gid, d), getRecentStats(gid, d)])
+      const [lbRes, recRes] = await Promise.all([
+        getLeaderboard(gid, d, !showAll),
+        getRecentStats(gid, 100, !showAll),
+      ])
       const players = lbRes?.data?.players  || []
       const records = recRes?.data?.records || []
       setLb(players)
@@ -242,11 +246,16 @@ export default function TeamPerformancePage() {
   }, [])
 
   useEffect(() => {
-    fetchData(guildId, days)
+    fetchData(guildId, days, showAllPlayers)
     if (timerRef.current) clearInterval(timerRef.current)
-    if (guildId) timerRef.current = setInterval(() => fetchData(guildId, days), 30000)
+    if (guildId) {
+      timerRef.current = setInterval(
+        () => fetchData(guildId, days, showAllPlayers),
+        30000,
+      )
+    }
     return () => clearInterval(timerRef.current)
-  }, [guildId, days, fetchData])
+  }, [guildId, days, showAllPlayers, fetchData])
 
   // Fuzzy check — auto-merges case-insensitive dupes, asks for 70-99% matches
   useEffect(() => {
@@ -591,6 +600,15 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
               </button>
             ))}
           </div>
+          <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-[#aeb5d2]">
+            <input
+              type="checkbox"
+              checked={showAllPlayers}
+              onChange={event => setShowAllPlayers(event.target.checked)}
+              className="accent-cyan-300"
+            />
+            Show all players
+          </label>
         </div>
       </header>
 
