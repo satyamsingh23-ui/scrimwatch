@@ -41,7 +41,7 @@ export default function OverviewPage({ status, loading, error }) {
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="fluid-grid gap-3">
         <StatCard label="Servers"           value={s.serverCount         ?? 0} accent="cyan"   />
         <StatCard label="Detections"        value={s.detectionCount      ?? 0} accent="amber"  />
         <StatCard label="Alerts Sent"       value={s.alertCount          ?? 0} accent="green"  />
@@ -53,7 +53,7 @@ export default function OverviewPage({ status, loading, error }) {
       </div>
 
       {/* Bottom row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="fluid-grid gap-4">
 
         {/* Last detection */}
         <Card className="p-5">

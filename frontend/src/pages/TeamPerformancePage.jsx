@@ -13,9 +13,6 @@ function safeJSON(k, fb) { try { return JSON.parse(localStorage.getItem(k) || 'n
 
 const mono       = { fontFamily: 'monospace' }
 const inp        = { background: '#07080f', border: '1px solid #1e2235', borderRadius: 8, padding: '8px 12px', fontSize: 13, color: '#c8cde8', fontFamily: 'monospace', outline: 'none' }
-const overlay    = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }
-const modalBox   = { background: '#111320', border: '1px solid #1e2235', borderRadius: 14, padding: 24, width: '100%', maxWidth: 480 }
-
 const TEAM_COLORS = ['#00e5ff', '#ffa502', '#7bed9f', '#a78bfa', '#ff6b81', '#eccc68']
 const DAY_OPTS    = [7, 14, 30]
 
@@ -87,8 +84,8 @@ function FuzzyModal({ matches, allNames, onConfirmAll, onDismiss }) {
   function decide(newName, val) { setDecisions(prev => ({ ...prev, [newName]: val })) }
   if (!matches.length) return null
   return (
-    <div style={overlay} onClick={onDismiss}>
-      <div style={{ ...modalBox, maxWidth: 540, maxHeight: '80vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+    <div className="responsive-modal-overlay" onClick={onDismiss}>
+      <div className="responsive-modal-panel max-w-xl" onClick={e => e.stopPropagation()}>
         <p style={{ fontSize: 10, color: '#00e5ff', ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
           Similar player names detected
         </p>
@@ -137,8 +134,8 @@ function RoleModal({ players, savedRoles, onConfirm, onClose }) {
   })
 
   return (
-    <div style={overlay} onClick={onClose}>
-      <div style={{ ...modalBox, maxWidth: 520 }} onClick={e => e.stopPropagation()}>
+    <div className="responsive-modal-overlay" onClick={onClose}>
+      <div className="responsive-modal-panel max-w-lg" onClick={e => e.stopPropagation()}>
         <p style={{ fontSize: 10, color: '#00e5ff', ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
           Assign roles before generating report
         </p>
@@ -151,7 +148,7 @@ function RoleModal({ players, savedRoles, onConfirm, onClose }) {
             const selected = ROLES.find(r => r.value === roles[p.player_name]) || ROLES[6]
             return (
               <div key={p.player_name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: '#07080f', borderRadius: 8, border: '1px solid #1e2235' }}>
-                <span style={{ flex: 1, fontWeight: 700, color: '#c8cde8', fontSize: 13 }}>{p.player_name}</span>
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontWeight: 700, color: '#c8cde8', fontSize: 13 }}>{p.player_name}</span>
                 <select
                   value={roles[p.player_name]}
                   onChange={e => setRoles(prev => ({ ...prev, [p.player_name]: e.target.value }))}
@@ -557,7 +554,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400">ScrimWatch · analytics</p>
-            <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">Team performance</h1>
+            <h1 className="mt-1 text-[clamp(1.4rem,4vw,1.875rem)] font-black tracking-tight text-white">Team performance</h1>
             <p className="mt-1 text-sm text-[#8189a9]">Squad results, map strengths and match-by-match momentum.</p>
           </div>
           <span className="rounded-full border border-cyan-400/20 bg-cyan-400/[0.07] px-3 py-1.5 font-mono text-[11px] text-cyan-200">
@@ -580,17 +577,17 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
             type="button"
             onClick={applyGuild}
             disabled={!inputId.trim()}
-            className="rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+            className="min-h-11 rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Load server
           </button>
-          <div className="flex gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             {DAY_OPTS.map(option => (
               <button
                 key={option}
                 type="button"
                 onClick={() => setDays(option)}
-                className={`rounded-lg border px-3 py-2 font-mono text-xs transition ${
+                className={`min-h-11 rounded-lg border px-3 py-2 font-mono text-xs transition ${
                   days === option
                     ? 'border-cyan-400/50 bg-cyan-400/10 text-cyan-300'
                     : 'border-[#252b43] text-[#737b9e] hover:border-[#46506e] hover:text-white'
@@ -600,7 +597,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
               </button>
             ))}
           </div>
-          <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-[#aeb5d2]">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs font-semibold text-[#aeb5d2]">
             <input
               type="checkbox"
               checked={showAllPlayers}
@@ -626,7 +623,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
                   key={item.id}
                   type="button"
                   onClick={() => { setSelTeam(item.id); setEditMode(false); setAiReport(null) }}
-                  className={`rounded-lg border px-3 py-2 text-left transition ${
+                  className={`min-h-11 rounded-lg border px-3 py-2 text-left transition ${
                     selTeam === item.id
                       ? 'border-cyan-400/40 bg-cyan-400/[0.08] text-white'
                       : 'border-[#252b43] text-[#8991b0] hover:border-[#46506e] hover:text-white'
@@ -638,7 +635,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
               ))}
             </div>
             <form
-              className="flex gap-2"
+              className="flex min-w-0 flex-wrap gap-2"
               onSubmit={event => {
                 event.preventDefault()
                 createTeam()
@@ -648,7 +645,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
                 value={newName}
                 onChange={event => setNewName(event.target.value)}
                 placeholder="New team name"
-                className="min-w-0 rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2 font-mono text-xs text-[#e2e6f5] outline-none placeholder:text-[#505775] focus:border-cyan-400/50"
+                className="min-w-0 flex-1 rounded-lg border border-[#252b43] bg-[#07080f] px-3 py-2 font-mono text-xs text-[#e2e6f5] outline-none placeholder:text-[#505775] focus:border-cyan-400/50"
               />
               <button type="submit" className="whitespace-nowrap rounded-lg border border-cyan-400/25 bg-cyan-400/10 px-3 py-2 text-xs font-bold text-cyan-200 hover:bg-cyan-400/15">
                 + Create team
@@ -754,7 +751,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
                 </div>
               ) : (
                 <>
-                  <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                  <section className="fluid-grid gap-3">
                     {[
                       ['Matches played', totalMatchCount, 'Recent match records'],
                       ['Chicken dinner', `${teamWinPct}%`, `${winCount} first-place finish${winCount === 1 ? '' : 'es'}`],
@@ -765,7 +762,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
                     ].map(([label, value, detail], index) => (
                       <article key={label} className={`rounded-xl border bg-[#10121e] p-4 ${index === 1 ? 'border-cyan-400/30 shadow-[0_0_24px_rgba(0,229,255,0.06)]' : 'border-[#1e2235]'}`}>
                         <p className="text-[10px] font-semibold uppercase tracking-wider text-[#737b9e]">{label}</p>
-                        <p className="mt-2 text-2xl font-black tracking-tight text-white sm:text-3xl">{value}</p>
+                        <p className="mt-2 text-[clamp(1.5rem,3vw,1.875rem)] font-black tracking-tight text-white">{value}</p>
                         <p className="mt-1 text-[10px] text-[#626a8b]">{detail}</p>
                       </article>
                     ))}
@@ -784,12 +781,12 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
                         No map-tagged match data is available in this time window.
                       </div>
                     ) : (
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      <div className="fluid-grid gap-3">
                         {mapAnalytics.map(map => (
                           <article key={map.map} className="rounded-xl border border-[#1e2235] bg-[#10121e] p-4">
-                            <div className="flex items-start justify-between gap-3">
+                            <div className="flex min-w-0 items-start justify-between gap-3">
                               <div>
-                                <h3 className="text-lg font-black text-white">{map.map}</h3>
+                                <h3 className="break-words text-lg font-black text-white">{map.map}</h3>
                                 <p className="mt-0.5 font-mono text-[10px] text-[#737b9e]">{map.matches} match{map.matches === 1 ? '' : 'es'}</p>
                               </div>
                               <div className="flex flex-wrap justify-end gap-1.5">
@@ -846,7 +843,7 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
                         {aiLoading ? 'Analyzing…' : aiReport ? 'Regenerate scouting report' : 'Generate scouting report'}
                       </button>
                     </div>
-                    <div className="overflow-x-auto">
+                    <div className="hidden overflow-x-auto lg:block">
                       <table className="w-full min-w-[900px] border-collapse text-left text-xs">
                         <thead className="bg-[#0b0d17] text-[9px] uppercase tracking-wider text-[#737b9e]">
                           <tr>{['Player', 'Role', 'Matches', 'Kills', 'Avg kills', 'Damage', 'Avg damage', 'Assists', 'MVPs', 'Win rate', 'Rating'].map(label => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr>
@@ -881,6 +878,46 @@ Be BGMI-specific, coach-focused, and use the assigned roles throughout.`
                           })}
                         </tbody>
                       </table>
+                    </div>
+                    <div className="fluid-grid gap-3 p-3 lg:hidden">
+                      {teamPlayers.map((player, index) => {
+                        const roleInfo = ROLES.find(role => role.value === savedRoles[player.player_name])
+                        const playerMatches = currentTeamRecords.filter(record => resolve(record.player_name) === resolve(player.player_name))
+                        const winRate = playerMatches.length
+                          ? Math.round((playerMatches.filter(record => Number(record.placement) === 1).length / playerMatches.length) * 100)
+                          : 0
+                        const isAliased = Object.values(aliases).includes(player.player_name) || aliases[player.player_name]
+                        return (
+                          <article key={player.player_name} className="min-w-0 rounded-lg border border-[#1e2235] bg-[#0b0d17] p-3">
+                            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[#1e2235] pb-2">
+                              <h3 className="break-all text-sm font-bold text-white">
+                                {player.player_name}
+                                {index === 0 && <span className="ml-2 text-[9px] text-amber-300">TOP</span>}
+                                {isAliased && <span className="ml-1 text-[9px] text-violet-300">≈</span>}
+                              </h3>
+                              <span className="text-xs" style={{ color: roleInfo?.color || '#737b9e' }}>{roleInfo?.label || '—'}</span>
+                            </div>
+                            <div className="responsive-detail-grid mt-3 gap-x-3 gap-y-2">
+                              {[
+                                ['Matches', player.matches],
+                                ['Kills', player.total_kills],
+                                ['Avg kills', player.avg_kills],
+                                ['Damage', player.total_damage?.toLocaleString() || '—'],
+                                ['Avg damage', player.avg_damage || '—'],
+                                ['Assists', player.total_assists],
+                                ['MVPs', player.mvp_count || '—'],
+                                ['Win rate', `${winRate}%`],
+                                ['Rating', player.avg_rating || '—'],
+                              ].map(([label, value]) => (
+                                <div key={label} className="min-w-0">
+                                  <p className="text-[9px] uppercase tracking-wider text-[#737b9e]">{label}</p>
+                                  <p className="break-words font-mono text-xs text-[#c8cde8]">{value}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </article>
+                        )
+                      })}
                     </div>
                   </section>
 

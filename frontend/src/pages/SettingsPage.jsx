@@ -71,7 +71,7 @@ export default function SettingsPage({ status }) {
 
       <Card className="p-5">
         <p className="text-[10px] text-cyan-400 uppercase tracking-widest mb-4">Vision Model</p>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <select
             value={visionModel}
             onChange={e => setVisionModel(e.target.value)}
@@ -132,8 +132,8 @@ export default function SettingsPage({ status }) {
             ['IDP_RATE_LIMIT_SECONDS', 'Cooldown between alerts (default: 30)'],
             ['WA_RATE_LIMIT_PER_MIN',  'Max WhatsApp alerts per minute (default: 10)'],
           ].map(([k, v]) => (
-            <div key={k} className="flex items-center justify-between px-3 py-2 rounded-lg bg-[#07080f] border border-[#1e2235]">
-              <span className="text-cyan-400">{k}</span>
+            <div key={k} className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2 rounded-lg bg-[#07080f] border border-[#1e2235]">
+              <span className="break-all text-cyan-400">{k}</span>
               <span className="text-[#5c6284] text-[10px]">{v}</span>
             </div>
           ))}

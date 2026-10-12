@@ -81,7 +81,30 @@ export default function HistoryPage() {
         {loading ? <Loading msg="Loading IDP history…" /> : filtered.length === 0 ? (
           <Empty title="No records found" sub="Try expanding the time window or clearing filters." />
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="space-y-3 p-3 sm:hidden">
+            {filtered.map((record, index) => (
+              <article key={`mobile-${index}`} className="min-w-0 rounded-lg border border-[#1e2235] bg-[#0b0d17] p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-semibold text-white">{record.guild_name || 'Unknown server'}</p>
+                    <p className="mt-1 break-words font-mono text-[11px] text-[#8189a9]">#{record.channel_name || '—'} · {record.author || '—'}</p>
+                  </div>
+                  <span className="shrink-0 font-mono text-[10px] text-[#737b9e]">{fmtDateTime(record.detected_at)}</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge color="cyan">ID: {record.room_id}</Badge>
+                  <Badge color="amber">PASS: {record.password}</Badge>
+                  {record.message_url && (
+                    <a href={record.message_url} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center text-xs text-cyan-300">
+                      Open message ↗
+                    </a>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+          <div className="touch-scroll hidden sm:block">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[#1e2235] bg-[#07080f]/50">
@@ -113,6 +136,7 @@ export default function HistoryPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Card>
     </div>

@@ -40,11 +40,11 @@ function PlayerRow({
           </span>
         </div>
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#7f86a8]">
-          <span className="inline-flex items-center gap-1 font-mono text-[#c8cde8]">
+          <span className="inline-flex min-w-0 max-w-full items-center gap-1 break-all font-mono text-[#c8cde8]">
             {player.uid}
           </span>
-          <span className="truncate text-[#c8cde8]">{player.discord_username || 'Unknown username'}</span>
-          <span className="font-mono text-[#77809f]">ID {player.discord_id}</span>
+          <span className="min-w-0 max-w-full break-all text-[#c8cde8]">{player.discord_username || 'Unknown username'}</span>
+          <span className="break-all font-mono text-[#77809f]">ID {player.discord_id}</span>
         </div>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -189,7 +189,7 @@ export default function RosterPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400">Team management</p>
-          <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">Approved Roster</h1>
+          <h1 className="mt-1 text-[clamp(1.4rem,4vw,1.875rem)] font-black tracking-tight text-white">Approved Roster</h1>
           <p className="mt-1 text-sm text-[#8189a9]">Tournament-ready lineups, grouped by team.</p>
         </div>
         <button
@@ -252,7 +252,7 @@ export default function RosterPage() {
           <p className="mt-3 text-sm font-semibold text-[#c8cde8]">No approved players yet. Post profile screenshots in your roster channel.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="fluid-grid gap-4">
           {teams.map(team => (
             <TeamCard
               key={team.team_tag}

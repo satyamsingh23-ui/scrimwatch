@@ -13,7 +13,7 @@ const NAV = [
   { to: '/settings', label: 'Settings',    icon: '⚙'  },
 ]
 
-export default function Sidebar({ status, mobileHidden = false }) {
+export default function Sidebar({ status, open, onClose }) {
   const { pathname } = useLocation()
   const online = status?.running
 
@@ -23,13 +23,9 @@ export default function Sidebar({ status, mobileHidden = false }) {
   }
 
   return (
-    <aside className={mobileHidden ? 'hidden sm:flex' : ''} style={{
-      position: 'fixed', top: 0, left: 0, height: '100vh', width: '208px',
-      background: '#0d0f1a', borderRight: '1px solid #1e2235',
-      display: mobileHidden ? undefined : 'flex', flexDirection: 'column', zIndex: 40
-    }}>
+    <aside className={`app-sidebar${open ? ' is-open' : ''}`} aria-label="Main navigation">
       {/* Logo */}
-      <div style={{ padding: '16px 14px 12px', borderBottom: '1px solid #1e2235', display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="sidebar-brand">
         <div style={{ width: 28, height: 28, borderRadius: 7, background: 'rgba(0,229,255,0.08)', border: '1px solid rgba(0,229,255,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#00e5ff', fontSize: 12, fontWeight: 700 }}>
           S
         </div>
@@ -40,7 +36,7 @@ export default function Sidebar({ status, mobileHidden = false }) {
       </div>
 
       {/* Online pill */}
-      <div style={{ margin: '10px 10px 0', padding: '7px 10px', borderRadius: 8, background: '#07080f', border: '1px solid #1e2235', display: 'flex', alignItems: 'center', gap: 7 }}>
+      <div className="sidebar-status">
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: online ? '#00ff88' : '#5c6284', flexShrink: 0, display: 'inline-block' }} />
         <span style={{ fontSize: 11, fontFamily: 'monospace', color: online ? '#00ff88' : '#5c6284' }}>
           {online ? 'BOT ONLINE' : 'BOT OFFLINE'}
@@ -48,16 +44,17 @@ export default function Sidebar({ status, mobileHidden = false }) {
       </div>
 
       {/* Nav */}
-      <nav style={{ flex: 1, padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto' }}>
+      <nav className="sidebar-nav">
         {NAV.map(({ to, label, icon }) => {
           const active = isActive(to)
           return (
             <Link
               key={to}
               to={to}
+              onClick={onClose}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10,
-                padding: '9px 10px', borderRadius: 7, textDecoration: 'none',
+                padding: '10px', minHeight: 44, borderRadius: 7, textDecoration: 'none',
                 fontSize: 13, cursor: 'pointer', transition: 'all 0.12s',
                 borderLeft: active ? '2px solid #00e5ff' : '2px solid transparent',
                 color: active ? '#00e5ff' : '#5c6284',
@@ -72,7 +69,7 @@ export default function Sidebar({ status, mobileHidden = false }) {
       </nav>
 
       {/* Footer */}
-      <div style={{ padding: '10px 14px', borderTop: '1px solid #1e2235' }}>
+      <div className="sidebar-footer">
         <p style={{ fontSize: 10, color: '#5c6284', fontFamily: 'monospace', margin: 0 }}>
           {status?.serverCount ?? 0} server(s) monitored
         </p>

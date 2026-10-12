@@ -51,10 +51,11 @@ export default function StatsPlayerCharts({ matches }) {
         {chartMatches.length === 0 ? (
           <div className="flex h-64 items-center justify-center text-sm text-[#737b9e]">No recent match history available.</div>
         ) : (
-          <ResponsiveContainer width="100%" height={260}>
+          <div className="fluid-chart">
+          <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={chartMatches} margin={{ top: 8, right: 4, bottom: 0, left: -18 }}>
               <CartesianGrid stroke="#22263b" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="match" tick={{ fill: '#737b9e', fontSize: 10 }} axisLine={{ stroke: '#30354d' }} tickLine={false} />
+              <XAxis dataKey="match" interval="preserveStartEnd" minTickGap={18} tick={{ fill: '#737b9e', fontSize: 10 }} axisLine={{ stroke: '#30354d' }} tickLine={false} />
               <YAxis yAxisId="kills" allowDecimals={false} tick={{ fill: '#22d3ee', fontSize: 10 }} axisLine={false} tickLine={false} />
               <YAxis yAxisId="damage" orientation="right" allowDecimals={false} tick={{ fill: '#a78bfa', fontSize: 10 }} axisLine={false} tickLine={false} />
               <Tooltip
@@ -67,6 +68,7 @@ export default function StatsPlayerCharts({ matches }) {
               <Line yAxisId="damage" type="monotone" dataKey="damage" stroke="#a78bfa" strokeWidth={2.5} dot={{ r: 3, fill: '#a78bfa', strokeWidth: 0 }} activeDot={{ r: 5 }} />
             </ComposedChart>
           </ResponsiveContainer>
+          </div>
         )}
         <div className="mt-3 flex flex-wrap gap-4 text-[10px] font-semibold text-[#9ba3c0]">
           <span className="inline-flex items-center gap-2"><i className="h-2 w-2 rounded-full bg-cyan-300" />Kills</span>
@@ -82,7 +84,7 @@ export default function StatsPlayerCharts({ matches }) {
         {mapAverages.length === 0 ? (
           <p className="py-5 text-center text-sm text-[#737b9e]">No map data available.</p>
         ) : (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="fluid-grid gap-2">
             {mapAverages.map(map => (
               <article key={map.map} className="flex items-center justify-between gap-3 rounded-lg border border-[#1e2235] bg-[#0b0d17] px-3 py-3">
                 <div className="min-w-0">

@@ -30,10 +30,11 @@ export default function TeamPerformanceCharts({ placementData, mapData }) {
         {placementData.length === 0 ? (
           <div className="flex h-64 items-center justify-center text-sm text-[#737b9e]">No placement history available.</div>
         ) : (
-          <ResponsiveContainer width="100%" height={260}>
+          <div className="fluid-chart">
+          <ResponsiveContainer width="100%" height="100%">
             <LineChart data={placementData} margin={{ top: 10, right: 14, bottom: 0, left: -12 }}>
               <CartesianGrid stroke="#22263b" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="match" tick={{ fill: '#737b9e', fontSize: 10 }} axisLine={{ stroke: '#30354d' }} tickLine={false} />
+              <XAxis dataKey="match" interval="preserveStartEnd" minTickGap={18} tick={{ fill: '#737b9e', fontSize: 10 }} axisLine={{ stroke: '#30354d' }} tickLine={false} />
               <YAxis reversed domain={[1, 'dataMax']} allowDecimals={false} tick={{ fill: '#737b9e', fontSize: 10 }} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={tooltipStyle}
@@ -44,6 +45,7 @@ export default function TeamPerformanceCharts({ placementData, mapData }) {
               <Line type="monotone" dataKey="placement" stroke="#22d3ee" strokeWidth={2.5} dot={{ r: 3, fill: '#22d3ee', strokeWidth: 0 }} activeDot={{ r: 5, fill: '#a5f3fc' }} connectNulls />
             </LineChart>
           </ResponsiveContainer>
+          </div>
         )}
       </article>
 
@@ -56,10 +58,11 @@ export default function TeamPerformanceCharts({ placementData, mapData }) {
         {mapData.length === 0 ? (
           <div className="flex h-64 items-center justify-center text-sm text-[#737b9e]">No map kill data available.</div>
         ) : (
-          <ResponsiveContainer width="100%" height={260}>
+          <div className="fluid-chart">
+          <ResponsiveContainer width="100%" height="100%">
             <BarChart data={mapData} margin={{ top: 10, right: 12, bottom: 0, left: -12 }}>
               <CartesianGrid stroke="#22263b" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="map" tick={{ fill: '#aab1cc', fontSize: 10 }} axisLine={{ stroke: '#30354d' }} tickLine={false} />
+              <XAxis dataKey="map" interval="preserveStartEnd" minTickGap={14} tick={{ fill: '#aab1cc', fontSize: 10 }} axisLine={{ stroke: '#30354d' }} tickLine={false} />
               <YAxis allowDecimals={false} tick={{ fill: '#737b9e', fontSize: 10 }} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={tooltipStyle}
@@ -68,6 +71,7 @@ export default function TeamPerformanceCharts({ placementData, mapData }) {
               <Bar dataKey="averageKills" fill="#22d3ee" radius={[5, 5, 0, 0]} maxBarSize={42} />
             </BarChart>
           </ResponsiveContainer>
+          </div>
         )}
       </article>
     </section>

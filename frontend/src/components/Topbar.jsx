@@ -14,16 +14,24 @@ const META = {
   '/settings': { title: 'Settings',          sub: 'Bot configuration & health'   },
 }
 
-export default function Topbar({ status, onRefresh }) {
+export default function Topbar({ status, onRefresh, onMenu, menuOpen }) {
   const { pathname } = useLocation()
   const page = META[pathname] || { title: 'ScrimWatch', sub: '' }
 
   return (
-    <header className="h-14 flex items-center justify-between px-6 border-b border-[#1e2235]
-                       bg-[#0d0f1a]/70 backdrop-blur sticky top-0 z-30 flex-shrink-0">
-      <div>
-        <p className="text-white font-semibold text-base leading-none">{page.title}</p>
-        <p className="text-[11px] text-[#5c6284] mt-0.5">{page.sub}</p>
+    <header className="app-topbar">
+      <button
+        type="button"
+        onClick={onMenu}
+        aria-label="Open navigation menu"
+        aria-expanded={menuOpen}
+        className="menu-button"
+      >
+        <span aria-hidden="true">☰</span>
+      </button>
+      <div className="topbar-heading">
+        <p className="text-white font-semibold text-base leading-tight">{page.title}</p>
+        <p className="text-[11px] text-[#5c6284] mt-0.5 topbar-subtitle">{page.sub}</p>
       </div>
       <div className="flex items-center gap-3">
         {status?.lastDetectedAt && (
@@ -34,7 +42,8 @@ export default function Topbar({ status, onRefresh }) {
         <button
           onClick={onRefresh}
           title="Refresh"
-          className="w-8 h-8 rounded-lg border border-[#1e2235] flex items-center justify-center
+          aria-label="Refresh dashboard status"
+          className="topbar-action rounded-lg border border-[#1e2235] flex items-center justify-center
                      text-[#5c6284] hover:text-cyan-400 hover:border-cyan-400/40 transition-all"
         >
           ↻

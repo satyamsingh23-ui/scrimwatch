@@ -1,6 +1,6 @@
 import React, { Suspense } from 'react'
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
-import { useCallback } from 'react'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
 
 import Sidebar            from './components/Sidebar.jsx'
 import Topbar             from './components/Topbar.jsx'
@@ -52,21 +52,43 @@ function P({ children }) {
 }
 
 function Layout() {
-  const { pathname } = useLocation()
-  const rosterRoute = pathname === '/roster'
   const { toasts, toast, dismiss } = useToast()
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const fetchStatus = useCallback(() => getStatus(), [])
   const { data: status, loading, error, refresh } = usePolling(fetchStatus, 4000)
 
+  useEffect(() => {
+    if (!drawerOpen) return undefined
+    const closeOnEscape = event => {
+      if (event.key === 'Escape') setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [drawerOpen])
+
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#07080f', overflow: 'hidden' }}>
-      <Sidebar status={status} mobileHidden={rosterRoute} />
-      <div
-        className={rosterRoute ? 'ml-0 sm:ml-[208px]' : ''}
-        style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: rosterRoute ? undefined : '208px', overflow: 'hidden' }}
-      >
-        <Topbar status={status} onRefresh={refresh} />
-        <main style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+    <div className="app-shell">
+      <Sidebar
+        status={status}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      />
+      {drawerOpen && (
+        <button
+          type="button"
+          className="drawer-overlay"
+          aria-label="Close navigation menu"
+          onClick={() => setDrawerOpen(false)}
+        />
+      )}
+      <div className="app-content">
+        <Topbar
+          status={status}
+          onRefresh={refresh}
+          onMenu={() => setDrawerOpen(true)}
+          menuOpen={drawerOpen}
+        />
+        <main className="app-main">
           <Routes>
             <Route path="/"         element={<P><OverviewPage  status={status} loading={loading} error={error} /></P>} />
             <Route path="/activity" element={<P><ActivityPage /></P>} />

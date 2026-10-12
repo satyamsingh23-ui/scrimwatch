@@ -65,9 +65,6 @@ function PlaceBadge({ p }) {
 }
 
 // ── Batch Fuzzy Modal ─────────────────────────────────────────────────────
-const overlay  = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }
-const modalBox = { background: '#111320', border: '1px solid #1e2235', borderRadius: 14, padding: 24, width: '100%', maxWidth: 540 }
-
 function FuzzyModal({ matches, allNames, onConfirmAll, onDismiss }) {
   const [decisions, setDecisions] = useState(() => {
     const d = {}
@@ -77,8 +74,8 @@ function FuzzyModal({ matches, allNames, onConfirmAll, onDismiss }) {
   function decide(newName, val) { setDecisions(prev => ({ ...prev, [newName]: val })) }
   if (!matches.length) return null
   return (
-    <div style={overlay} onClick={onDismiss}>
-      <div style={{ ...modalBox, maxHeight: '80vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+    <div className="responsive-modal-overlay" onClick={onDismiss}>
+      <div className="responsive-modal-panel max-w-xl" onClick={e => e.stopPropagation()}>
         <p style={{ fontSize: 10, color: '#00e5ff', ...mono, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
           Similar player names detected
         </p>
@@ -133,7 +130,7 @@ function PlayerModal({ player, history, rosterEntry, onClose }) {
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/75 p-3 sm:p-5"
       onClick={onClose}>
-      <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[#29304a] bg-[#0c0e18] shadow-2xl"
+    <div className="phone-sheet flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[#29304a] bg-[#0c0e18] shadow-2xl"
         onClick={event => event.stopPropagation()}>
         <header className="flex items-center gap-3 border-b border-[#1e2235] p-4 sm:p-5">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-400/10 text-lg font-black text-cyan-200">
@@ -159,7 +156,7 @@ function PlayerModal({ player, history, rosterEntry, onClose }) {
             className="ml-auto rounded-lg border border-[#29304a] px-3 py-2 text-sm text-[#aeb5d2] hover:border-cyan-400/40 hover:text-white">✕</button>
         </header>
 
-        <div className="grid grid-cols-2 gap-px border-b border-[#1e2235] bg-[#1e2235] sm:grid-cols-4">
+        <div className="responsive-detail-grid gap-px border-b border-[#1e2235] bg-[#1e2235]">
           {[
             ['Kills in history', totalKills, 'text-emerald-300'],
             ['Damage in history', totalDamage.toLocaleString(), 'text-violet-300'],
@@ -184,7 +181,33 @@ function PlayerModal({ player, history, rosterEntry, onClose }) {
             {recentMatches.length === 0 ? (
               <p className="p-6 text-center text-sm text-[#737b9e]">No recent matches available for this player.</p>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+              <div className="space-y-2 p-3 sm:hidden">
+                {[...recentMatches].reverse().map((match, index) => (
+                  <article key={`mobile-${match.image_hash || match.detected_at}-${index}`} className="min-w-0 rounded-lg border border-[#1e2235] bg-[#0b0d17] p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="break-words text-sm font-semibold text-white">{match.map_name || 'Unknown map'}</p>
+                        <p className="mt-1 font-mono text-[10px] text-[#8189a9]">{fmtDateTime(match.detected_at)}</p>
+                      </div>
+                      <PlaceBadge p={match.placement} />
+                    </div>
+                    <div className="responsive-detail-grid mt-3 gap-2">
+                      {[
+                        ['Kills', match.kills ?? '—'],
+                        ['Damage', match.damage ?? '—'],
+                        ['Survival', match.survived != null ? `${match.survived}m` : '—'],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded bg-[#10121e] p-2">
+                          <p className="text-[9px] uppercase tracking-wide text-[#737b9e]">{label}</p>
+                          <p className="mt-1 font-mono text-xs text-[#d8deef]">{value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <div className="touch-scroll hidden sm:block">
                 <table className="w-full min-w-[620px] text-left text-xs">
                   <thead className="bg-[#0b0d17] text-[9px] uppercase tracking-wider text-[#737b9e]">
                     <tr>{['Date', 'Map', 'Place', 'Kills', 'Damage', 'Survival'].map(label => <th key={label} className="px-3 py-2.5">{label}</th>)}</tr>
@@ -203,6 +226,7 @@ function PlayerModal({ player, history, rosterEntry, onClose }) {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </div>
         </div>
@@ -418,7 +442,7 @@ export default function StatsPage() {
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400">ScrimWatch · player analytics</p>
-            <h1 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">Player performance</h1>
+            <h1 className="mt-1 text-[clamp(1.4rem,4vw,1.875rem)] font-black tracking-tight text-white">Player performance</h1>
             <p className="mt-1 text-sm text-[#8189a9]">Ratings, match output and roster-linked player profiles.</p>
           </div>
           <span className="rounded-full border border-cyan-400/20 bg-cyan-400/[0.07] px-3 py-1.5 font-mono text-[11px] text-cyan-200">{days}-day window</span>
@@ -435,7 +459,7 @@ export default function StatsPage() {
             />
           </label>
           <button type="button" onClick={apply} disabled={!inputId.trim()}
-            className="rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">Load server</button>
+            className="min-h-11 rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-bold text-[#071016] transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">Load server</button>
           <button type="button" onClick={() => fetchData(guildId, days, showAllPlayers)} disabled={!guildId || loading}
             className="rounded-lg border border-[#29304a] px-4 py-2.5 text-sm font-semibold text-[#aeb5d2] hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-50">Refresh</button>
         </div>
@@ -473,7 +497,7 @@ export default function StatsPage() {
             <div className="flex flex-wrap gap-1.5">
               {DAY_OPTS.map(d => (
                 <button key={d} type="button" onClick={() => setDays(d)}
-                  className={`rounded-full border px-3 py-1.5 font-mono text-xs transition ${
+                className={`min-h-11 rounded-full border px-3 py-1.5 font-mono text-xs transition ${
                     days === d
                       ? 'border-cyan-300 bg-cyan-300 text-[#071016]'
                       : 'border-[#29304a] text-[#8991b0] hover:border-cyan-400/40 hover:text-cyan-200'
@@ -484,10 +508,10 @@ export default function StatsPage() {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {[['leaderboard','🏆 Leaderboard'],['recent','🕐 Recent']].map(([t, label]) => (
                 <button key={t} type="button" onClick={() => setTab(t)}
-                  className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                  className={`min-h-11 rounded-full border px-3 py-1.5 text-xs transition ${
                     tab === t
                       ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200'
                       : 'border-[#29304a] text-[#8991b0] hover:text-white'
@@ -529,7 +553,7 @@ export default function StatsPage() {
               <div className="flex flex-wrap gap-1.5 sm:ml-auto">
                 {MAPS.map(m => (
                   <button key={m} type="button" onClick={() => setMapFilter(m)}
-                    className={`rounded-full border px-2.5 py-1 font-mono text-[10px] transition ${
+                    className={`min-h-11 rounded-full border px-2.5 py-1 font-mono text-[10px] transition ${
                       mapFilter === m
                         ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200'
                         : 'border-[#29304a] text-[#737b9e] hover:text-white'
@@ -558,10 +582,10 @@ export default function StatsPage() {
                     </div>
                     <p className="font-mono text-[10px] text-[#737b9e]">Rating · {days}-day window</p>
                   </div>
-                  <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-3">
+                  <div className="fluid-grid items-end gap-3">
                     {podiumPlayers.map((player, index) => {
                       const podiumPlace = index + 1
-                      const sizeClass = podiumPlace === 1 ? 'md:order-2 md:-translate-y-3' : podiumPlace === 2 ? 'md:order-1' : 'md:order-3'
+                      const sizeClass = podiumPlace === 1 ? 'lg:order-2 lg:-translate-y-3' : podiumPlace === 2 ? 'lg:order-1' : 'lg:order-3'
                       return (
                         <button
                           key={player.player_name}
@@ -596,7 +620,7 @@ export default function StatsPage() {
                     </div>
                     <p className="font-mono text-[10px] text-[#737b9e]">{sortedPlayers.length} player{sortedPlayers.length === 1 ? '' : 's'} · click a card for match detail</p>
                   </div>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="fluid-grid gap-3">
                     {sortedPlayers.map((player, index) => {
                       const kdPercent = maxKd ? Math.min((player._kd / maxKd) * 100, 100) : 0
                       const damage = Number(player.avg_damage) || 0
@@ -684,7 +708,40 @@ export default function StatsPage() {
                   <p style={{ color: '#5c6284', fontSize: 12, ...mono }}>No recent screenshots yet.</p>
                 </div>
               ) : (
-                <div style={{ overflowX: 'auto' }}>
+                <>
+                <div className="space-y-2 p-3 sm:hidden">
+                  {filteredRecent.map((match, index) => {
+                    const detail = match.screenshot_type === 'detail_stats'
+                    return (
+                      <article key={`mobile-${match.image_hash || match.detected_at}-${index}`} className="min-w-0 rounded-lg border border-[#1e2235] bg-[#0b0d17] p-3">
+                        <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="break-all text-sm font-semibold text-white">{match.player_name}</p>
+                            <p className="mt-1 break-words text-xs" style={{ color: MAP_COLOR[match.map_name] || '#c8cde8' }}>{match.map_name || 'Unknown map'}</p>
+                            <p className="mt-1 font-mono text-[10px] text-[#8189a9]">{fmtDateTime(match.detected_at)}</p>
+                          </div>
+                          <PlaceBadge p={match.placement} />
+                        </div>
+                        <div className="responsive-detail-grid mt-3 gap-2">
+                          {[
+                            ['Kills', match.kills ?? '—'],
+                            ['Assists', match.assists ?? '—'],
+                            ['Damage', match.damage ?? '—'],
+                            ['Survived', match.survived != null ? `${match.survived}m` : '—'],
+                            ['Rating', match.rating ?? '—'],
+                            ['Type', detail ? 'Full stats' : 'Squad'],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded bg-[#10121e] p-2">
+                              <p className="text-[9px] uppercase tracking-wide text-[#737b9e]">{label}</p>
+                              <p className="mt-1 break-words font-mono text-xs text-[#d8deef]">{value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+                <div className="touch-scroll hidden sm:block">
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: 'rgba(0,0,0,0.3)', borderBottom: '1px solid #1e2235' }}>
@@ -735,6 +792,7 @@ export default function StatsPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
             </div>
           )}

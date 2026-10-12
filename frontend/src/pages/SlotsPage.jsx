@@ -101,7 +101,7 @@ export default function SlotsPage({ toast }) {
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <input
-            style={{ ...input, flex: 1, minWidth: 200 }}
+            style={{ ...input, flex: 1, minWidth: 'min(100%, 200px)' }}
             placeholder="Paste your Discord Server ID…"
             value={inputId}
             onChange={e => setInputId(e.target.value)}
@@ -166,7 +166,7 @@ export default function SlotsPage({ toast }) {
 
           {/* Slot grid */}
           {filtered.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
+            <div className="fluid-grid" style={{ gap: 10 }}>
               {filtered.map(({ slot, team }) => (
                 <div
                   key={slot}

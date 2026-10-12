@@ -41,7 +41,7 @@ function StatCard({ label, value, accent, sub }) {
   return (
     <Card className="p-4">
       <p className="text-[10px] text-[#5c6284] uppercase tracking-widest mb-1">{label}</p>
-      <p className={`text-3xl font-semibold leading-none ${color}`}>{value ?? '—'}</p>
+      <p className={`text-[clamp(1.5rem,4vw,1.875rem)] font-semibold leading-none break-words ${color}`}>{value ?? '—'}</p>
       {sub && <p className="text-[10px] text-[#5c6284] mt-1 font-mono">{sub}</p>}
     </Card>
   )

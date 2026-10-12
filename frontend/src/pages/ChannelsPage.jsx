@@ -72,7 +72,7 @@ export default function ChannelsPage() {
       ) : loading ? (
         <Loading msg="Fetching channel config…" />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="fluid-grid gap-4">
           <ChannelList title="IDP Detection Channels"  channels={data?.idp_channels || []} accent="cyan"  />
           <ChannelList title="Registration Channels"   channels={data?.reg_channels || []} accent="amber" />
         </div>
