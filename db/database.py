@@ -11,6 +11,7 @@ All public functions are coroutines safe to call from the event loop.
 """
 
 import sqlite3
+import json
 import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -99,6 +100,23 @@ CREATE TABLE IF NOT EXISTS stats_image_hashes (
     hash         TEXT PRIMARY KEY,
     guild_id     INTEGER DEFAULT 0,
     processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS stats_match_rows (
+    guild_id          INTEGER NOT NULL,
+    image_hash        TEXT    NOT NULL,
+    row_index         INTEGER NOT NULL,
+    record_json       TEXT    NOT NULL,
+    roster_profile_id INTEGER,
+    player_stat_id    INTEGER,
+    PRIMARY KEY (guild_id, image_hash, row_index)
+);
+
+CREATE TABLE IF NOT EXISTS stats_match_messages (
+    guild_id   INTEGER NOT NULL,
+    image_hash TEXT    NOT NULL,
+    message_id INTEGER NOT NULL UNIQUE,
+    PRIMARY KEY (guild_id, image_hash, message_id)
 );
 
 -- Stats channels (separate from channel_config to avoid CHECK constraint conflict)
@@ -748,6 +766,11 @@ class Database:
 
     def save_player_stat(self, record: dict) -> int:
         """Insert one player stats record. Returns new row id."""
+        row_id = self._insert_player_stat(record)
+        self._db.commit()
+        return row_id
+
+    def _insert_player_stat(self, record: dict) -> int:
         cur = self._db.execute(
             """
             INSERT INTO player_stats (
@@ -781,8 +804,219 @@ class Database:
                 record.get("detected_at", datetime.utcnow().isoformat()),
             ),
         )
-        self._db.commit()
         return cur.lastrowid
+
+    def save_stats_match(
+        self,
+        guild_id: int,
+        image_hash: str,
+        records: list[dict],
+        assignments: list[int | None],
+        saved_rows: dict[int, dict],
+        confirmation_message_id: int | None = None,
+    ) -> None:
+        """Save extracted rows and their initial roster assignments atomically."""
+        with self._db:
+            for index, record in enumerate(records):
+                saved_record = saved_rows.get(index)
+                stat_id = None
+                if saved_record is not None:
+                    stat_id = self._insert_player_stat(saved_record)
+                self._db.execute(
+                    """
+                    INSERT INTO stats_match_rows (
+                        guild_id, image_hash, row_index, record_json,
+                        roster_profile_id, player_stat_id
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        guild_id,
+                        image_hash,
+                        index,
+                        json.dumps(record),
+                        assignments[index],
+                        stat_id,
+                    ),
+                )
+            self._db.execute(
+                "INSERT OR IGNORE INTO stats_image_hashes (hash, guild_id) VALUES (?, ?)",
+                (image_hash, guild_id),
+            )
+            if confirmation_message_id is not None:
+                self._db.execute(
+                    """
+                    INSERT OR IGNORE INTO stats_match_messages
+                        (guild_id, image_hash, message_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    (guild_id, image_hash, confirmation_message_id),
+                )
+
+    def register_stats_match_message(
+        self,
+        guild_id: int,
+        image_hash: str,
+        message_id: int,
+    ) -> None:
+        self._db.execute(
+            """
+            INSERT OR IGNORE INTO stats_match_messages
+                (guild_id, image_hash, message_id)
+            VALUES (?, ?, ?)
+            """,
+            (guild_id, image_hash, message_id),
+        )
+        self._db.commit()
+
+    def find_stats_matches(
+        self,
+        guild_id: int,
+        *,
+        reference: str | None = None,
+        message_id: int | None = None,
+    ) -> list[dict]:
+        """Find saved match row sets by confirmation message ID or hash prefix."""
+        if message_id is not None:
+            rows = self._db.execute(
+                """
+                SELECT DISTINCT image_hash
+                FROM stats_match_messages
+                WHERE guild_id=? AND message_id=?
+                """,
+                (guild_id, message_id),
+            ).fetchall()
+        elif reference:
+            rows = self._db.execute(
+                """
+                SELECT DISTINCT image_hash
+                FROM stats_match_rows
+                WHERE guild_id=? AND image_hash LIKE ?
+                ORDER BY image_hash
+                LIMIT 2
+                """,
+                (guild_id, f"{reference}%"),
+            ).fetchall()
+        else:
+            return []
+
+        matches = []
+        for match in rows:
+            image_hash = match["image_hash"]
+            match_rows = self._db.execute(
+                """
+                SELECT row_index, record_json, roster_profile_id, player_stat_id
+                FROM stats_match_rows
+                WHERE guild_id=? AND image_hash=?
+                ORDER BY row_index
+                """,
+                (guild_id, image_hash),
+            ).fetchall()
+            matches.append(
+                {
+                    "guild_id": guild_id,
+                    "image_hash": image_hash,
+                    "rows": [
+                        {
+                            "row_index": row["row_index"],
+                            "record": json.loads(row["record_json"]),
+                            "roster_profile_id": row["roster_profile_id"],
+                            "player_stat_id": row["player_stat_id"],
+                        }
+                        for row in match_rows
+                    ],
+                }
+            )
+        return matches
+
+    def update_stats_match_assignments(
+        self,
+        guild_id: int,
+        image_hash: str,
+        assignments: list[int | None],
+        roster_profiles: list[dict],
+    ) -> dict[str, int]:
+        """Apply assignment changes to only the stat rows belonging to one match."""
+        profiles_by_id = {int(profile["id"]): profile for profile in roster_profiles}
+        added = updated = removed = 0
+        with self._db:
+            rows = self._db.execute(
+                """
+                SELECT row_index, record_json, roster_profile_id, player_stat_id
+                FROM stats_match_rows
+                WHERE guild_id=? AND image_hash=?
+                ORDER BY row_index
+                """,
+                (guild_id, image_hash),
+            ).fetchall()
+            if len(rows) != len(assignments):
+                raise ValueError("Match assignment row count has changed; reload the review.")
+
+            for row, profile_id in zip(rows, assignments):
+                record = json.loads(row["record_json"])
+                old_profile_id = row["roster_profile_id"]
+                stat_id = row["player_stat_id"]
+                if profile_id is None:
+                    if stat_id is not None:
+                        self._db.execute(
+                            "DELETE FROM player_stats WHERE id=? AND guild_id=? AND image_hash=?",
+                            (stat_id, guild_id, image_hash),
+                        )
+                        removed += 1
+                    self._db.execute(
+                        """
+                        UPDATE stats_match_rows
+                        SET roster_profile_id=NULL, player_stat_id=NULL
+                        WHERE guild_id=? AND image_hash=? AND row_index=?
+                        """,
+                        (guild_id, image_hash, row["row_index"]),
+                    )
+                    continue
+
+                profile = profiles_by_id.get(int(profile_id))
+                if profile is None:
+                    raise ValueError("The selected roster player is no longer approved.")
+                assigned_record = {
+                    **record,
+                    "guild_id": guild_id,
+                    "player_name": profile["ign"],
+                    "roster_profile_id": int(profile_id),
+                    "image_hash": image_hash,
+                }
+                if stat_id is None:
+                    stat_id = self._insert_player_stat(assigned_record)
+                    added += 1
+                else:
+                    self._db.execute(
+                        """
+                        UPDATE player_stats
+                        SET player_name=?, roster_profile_id=?
+                        WHERE id=? AND guild_id=? AND image_hash=?
+                        """,
+                        (
+                            profile["ign"],
+                            int(profile_id),
+                            stat_id,
+                            guild_id,
+                            image_hash,
+                        ),
+                    )
+                    if old_profile_id != profile_id:
+                        updated += 1
+                self._db.execute(
+                    """
+                    UPDATE stats_match_rows
+                    SET roster_profile_id=?, player_stat_id=?
+                    WHERE guild_id=? AND image_hash=? AND row_index=?
+                    """,
+                    (
+                        int(profile_id),
+                        stat_id,
+                        guild_id,
+                        image_hash,
+                        row["row_index"],
+                    ),
+                )
+        return {"added": added, "updated": updated, "removed": removed}
 
     def save_player_stats(self, records: list[dict]) -> int:
         """Batch insert. Returns count saved."""

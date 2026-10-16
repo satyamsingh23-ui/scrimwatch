@@ -15,6 +15,7 @@ from bot.discord_bot import (
     RosterApprovalView,
     RosterEditModal,
     RosterTeamTagModal,
+    StatsConfirmView,
 )
 from db.database import Database
 from utils.roster import extract_team_tag
@@ -560,6 +561,154 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(view._saved)
         self.assertFalse(self.database.is_stats_duplicate("duplicate-assignment-test", self.guild_id))
         self.assertEqual(self.database.get_recent_stats(self.guild_id, 10), [])
+
+    def _approved_stats_profiles(self):
+        profiles = [
+            self._create_profile(
+                user_id=1100,
+                ign="FirstPlayer",
+                uid="303030301",
+            ),
+            self._create_profile(
+                user_id=1101,
+                ign="SecondPlayer",
+                uid="303030302",
+            ),
+        ]
+        for profile in profiles:
+            self.database.review_roster_profile(
+                self.guild_id,
+                profile["discord_user_id"],
+                "approved",
+            )
+        return self.database.get_approved_roster_profiles(self.guild_id)
+
+    def _save_fixable_match(self, profiles, *, image_hash="fixable-match"):
+        records = [
+            {
+                "guild_id": self.guild_id,
+                "player_name": "Extracted First",
+                "kills": 4,
+                "placement": 2,
+                "map_name": "Erangel",
+                "image_hash": image_hash,
+            },
+            {
+                "guild_id": self.guild_id,
+                "player_name": "Extracted Unknown",
+                "kills": 2,
+                "placement": 2,
+                "map_name": "Erangel",
+                "image_hash": image_hash,
+            },
+        ]
+        self.database.save_stats_match(
+            self.guild_id,
+            image_hash,
+            records,
+            [profiles[0]["id"], None],
+            {
+                0: {
+                    **records[0],
+                    "player_name": profiles[0]["ign"],
+                    "roster_profile_id": profiles[0]["id"],
+                }
+            },
+            confirmation_message_id=987654,
+        )
+        return records
+
+    def _make_fix_view(self, profiles, image_hash="fixable-match"):
+        match = self.database.find_stats_matches(
+            self.guild_id,
+            reference=image_hash[:8],
+        )[0]
+        return StatsConfirmView(
+            records=[row["record"] for row in match["rows"]],
+            img_hash=match["image_hash"],
+            guild_id=self.guild_id,
+            message=_ReviewMessage(),
+            place_str="#2",
+            map_name="Erangel",
+            roster_profiles=profiles,
+            is_fix=True,
+            reviewer_id=999,
+            initial_assignments=[
+                row["roster_profile_id"] for row in match["rows"]
+            ],
+        )
+
+    async def test_fix_match_adds_previously_unknown_row(self):
+        profiles = self._approved_stats_profiles()
+        self._save_fixable_match(profiles)
+        view = self._make_fix_view(profiles)
+        self.assertEqual(view.assignments, [profiles[0]["id"], None])
+        view.assignments[1] = profiles[1]["id"]
+        interaction = self._create_edit_interaction(999, is_admin=True)
+
+        with patch.object(discord_bot, "db", self.database):
+            await view._do_save(interaction)
+
+        saved = self.database.get_recent_stats(self.guild_id, limit=10)
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(
+            {row["roster_profile_id"] for row in saved},
+            {profiles[0]["id"], profiles[1]["id"]},
+        )
+        self.assertIn("Added 1 player(s), updated 0, removed 0.", interaction.response.edited["content"])
+
+    async def test_fix_match_reassigns_existing_row_without_duplicate(self):
+        profiles = self._approved_stats_profiles()
+        self._save_fixable_match(profiles)
+        view = self._make_fix_view(profiles)
+        view.assignments[0] = profiles[1]["id"]
+        interaction = self._create_edit_interaction(999, is_admin=True)
+
+        with patch.object(discord_bot, "db", self.database):
+            await view._do_save(interaction)
+
+        saved = self.database.get_recent_stats(self.guild_id, limit=10)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["roster_profile_id"], profiles[1]["id"])
+        self.assertEqual(saved[0]["player_name"], profiles[1]["ign"])
+        self.assertIn("Added 0 player(s), updated 1, removed 0.", interaction.response.edited["content"])
+
+    async def test_fix_match_removes_row_set_to_unknown(self):
+        profiles = self._approved_stats_profiles()
+        self._save_fixable_match(profiles)
+        view = self._make_fix_view(profiles)
+        view.assignments[0] = None
+        interaction = self._create_edit_interaction(999, is_admin=True)
+
+        with patch.object(discord_bot, "db", self.database):
+            await view._do_save(interaction)
+
+        self.assertEqual(self.database.get_recent_stats(self.guild_id, limit=10), [])
+        match = self.database.find_stats_matches(
+            self.guild_id,
+            message_id=987654,
+        )[0]
+        self.assertEqual(
+            [row["roster_profile_id"] for row in match["rows"]],
+            [None, None],
+        )
+        self.assertIn("Added 0 player(s), updated 0, removed 1.", interaction.response.edited["content"])
+
+    async def test_fix_match_duplicate_assignment_is_blocked(self):
+        profiles = self._approved_stats_profiles()
+        self._save_fixable_match(profiles)
+        view = self._make_fix_view(profiles)
+        view.assignments[1] = profiles[0]["id"]
+        interaction = self._create_edit_interaction(999, is_admin=True)
+
+        with patch.object(discord_bot, "db", self.database):
+            await view._do_save(interaction)
+
+        saved = self.database.get_recent_stats(self.guild_id, limit=10)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["roster_profile_id"], profiles[0]["id"])
+        self.assertFalse(view._saved)
+        self.assertIn("assigned to more than one row", interaction.response.edited["content"])
 
     async def test_eight_extracted_rows_save_four_roster_assignments_and_skip_four(self):
         for index in range(4):

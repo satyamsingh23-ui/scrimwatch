@@ -1313,6 +1313,7 @@ async def cmd_help(ctx: commands.Context) -> None:
         "`!clearslots`      — Clear all slots for this server\n"
         "`!status`          — Bot runtime status\n"
         "`!idphistory`      — Last 24h IDP detections\n"
+        "`!fixmatch [id]`   — Fix player assignments in a saved match\n"
     )
     user = (
         "`!slots`           — Show current slot list\n"
@@ -1338,6 +1339,7 @@ def _build_stats_embed(
     records: list[dict],
     saved: bool = False,
     overflow_count: int = 0,
+    match_ref: str | None = None,
 ) -> discord.Embed:
     """Build the stats preview/saved embed from a records list."""
     r0        = records[0]
@@ -1362,6 +1364,8 @@ def _build_stats_embed(
     footer = f"{map_name} • {len(records)} player(s)"
     if overflow_count:
         footer += f" • {overflow_count} more row(s): upload separately"
+    if match_ref:
+        footer += f" • Match ID: {match_ref[:8]}"
     embed.set_footer(text=footer)
 
     for r in records:
@@ -1416,6 +1420,8 @@ class StatsRosterSelect(discord.ui.Select):
         self.record_index = record_index
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if not await self.parent_view._authorize_fix_interaction(interaction):
+            return
         value = self.values[0]
         self.parent_view.assignments[self.record_index] = (
             int(value) if value != "unknown" else None
@@ -1427,6 +1433,7 @@ class StatsRosterSelect(discord.ui.Select):
             embed=_build_stats_embed(
                 self.parent_view.records,
                 overflow_count=self.parent_view.overflow_count,
+                match_ref=self.parent_view.img_hash,
             ),
             view=self.parent_view,
         )
@@ -1455,6 +1462,8 @@ class StatsEditModal(discord.ui.Modal, title="✏️ Edit Player Names & Kills")
             ))
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await self._parent_view._authorize_fix_interaction(interaction):
+            return
         changed_names = set()
         for i, item in enumerate(self.children):
             if i >= len(self._records):
@@ -1475,6 +1484,7 @@ class StatsEditModal(discord.ui.Modal, title="✏️ Edit Player Names & Kills")
         embed = _build_stats_embed(
             self._records,
             overflow_count=self._parent_view.overflow_count,
+            match_ref=self._parent_view.img_hash,
         )
         embed.set_footer(text=embed.footer.text + "  ·  Changes applied — confirm to save")
         self._parent_view._refresh_option_defaults()
@@ -1499,6 +1509,9 @@ class StatsConfirmView(discord.ui.View):
         map_name:  str,
         roster_profiles: list[dict] | None = None,
         overflow_count: int = 0,
+        is_fix: bool = False,
+        reviewer_id: int | None = None,
+        initial_assignments: list[int | None] | None = None,
     ):
         super().__init__(timeout=120)
         self.records = records[:4]
@@ -1509,16 +1522,42 @@ class StatsConfirmView(discord.ui.View):
         self._map_name = map_name
         self.overflow_count = overflow_count
         self._saved = False
+        self.is_fix = is_fix
+        self.reviewer_id = reviewer_id
         self.roster_profiles = (
             roster_profiles
             if roster_profiles is not None
             else db.get_approved_roster_profiles(guild_id)
         )
+        self.assignments: list[int | None] = (
+            list(initial_assignments)
+            if initial_assignments is not None
+            else [None] * len(self.records)
+        )
+        if len(self.assignments) != len(self.records):
+            raise ValueError("Initial roster assignments must match the review rows.")
         self._roster_options = self._build_roster_options()
-        self.assignments: list[int | None] = [None] * len(self.records)
         self.manual_assignments: set[int] = set()
-        self._preselect_roster_players()
+        if initial_assignments is None:
+            self._preselect_roster_players()
         self._build_components()
+
+    async def _authorize_fix_interaction(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if not self.is_fix:
+            return True
+        if (
+            interaction.user.id != self.reviewer_id
+            or not interaction.user.guild_permissions.administrator
+        ):
+            await interaction.response.send_message(
+                "Only the admin who started this match fix can use these controls.",
+                ephemeral=True,
+            )
+            return False
+        return True
 
     def _build_roster_options(self) -> list[discord.SelectOption]:
         if not self.roster_profiles:
@@ -1553,6 +1592,19 @@ class StatsConfirmView(discord.ui.View):
                 (profile.get("ign") or "").casefold(),
                 str(profile.get("uid") or ""),
             ),
+        )
+        selected_ids = set(self.assignments)
+        selected_profiles = [
+            profile
+            for profile in ordered_profiles
+            if int(profile["id"]) in selected_ids
+        ]
+        ordered_profiles = (
+            selected_profiles
+            + [
+                profile for profile in ordered_profiles
+                if int(profile["id"]) not in selected_ids
+            ]
         )[:24]
         options = [
             discord.SelectOption(
@@ -1649,8 +1701,9 @@ class StatsConfirmView(discord.ui.View):
             emoji="✏️",
             row=4,
         )
-        edit_button.callback = self.edit_btn
-        self.add_item(edit_button)
+        if not self.is_fix:
+            edit_button.callback = self.edit_btn
+            self.add_item(edit_button)
 
     def _refresh_option_defaults(self) -> None:
         for item in self.children:
@@ -1693,6 +1746,7 @@ class StatsConfirmView(discord.ui.View):
                     embed=_build_stats_embed(
                         self.records,
                         overflow_count=self.overflow_count,
+                        match_ref=self.img_hash,
                     ),
                     view=self,
                 )
@@ -1707,6 +1761,56 @@ class StatsConfirmView(discord.ui.View):
         self.stop()
 
         try:
+            if self.is_fix:
+                result = db.update_stats_match_assignments(
+                    self.guild_id,
+                    self.img_hash,
+                    self.assignments,
+                    self.roster_profiles,
+                )
+                self._saved = True
+                content = (
+                    f"Added {result['added']} player(s), updated "
+                    f"{result['updated']}, removed {result['removed']}."
+                )
+                fixed_records = []
+                for index, profile_id in enumerate(self.assignments):
+                    if profile_id is None:
+                        continue
+                    profile = next(
+                        profile for profile in self.roster_profiles
+                        if int(profile["id"]) == profile_id
+                    )
+                    fixed_records.append(
+                        {
+                            **self.records[index],
+                            "player_name": profile["ign"],
+                            "roster_profile_id": profile_id,
+                        }
+                    )
+                embed = (
+                    _build_stats_embed(
+                        fixed_records,
+                        saved=True,
+                        match_ref=self.img_hash,
+                    )
+                    if fixed_records
+                    else None
+                )
+                if interaction:
+                    await interaction.response.edit_message(
+                        content=content,
+                        embed=embed,
+                        view=None,
+                    )
+                else:
+                    await self._bot_msg.edit(
+                        content=content,
+                        embed=embed,
+                        view=None,
+                    )
+                return
+
             if self.roster_profiles:
                 roster_by_id = {
                     int(profile["id"]): profile for profile in self.roster_profiles
@@ -1730,15 +1834,40 @@ class StatsConfirmView(discord.ui.View):
                 )
             else:
                 eligible_records = [
-                    {**record, "roster_profile_id": None}
+                    {
+                        **record,
+                        "roster_profile_id": None,
+                        "guild_id": self.guild_id,
+                    }
                     for record in self.records
                 ]
                 skipped_count = self.overflow_count
-            if eligible_records:
-                db.save_player_stats(eligible_records)
-            db.mark_stats_processed(self.img_hash, self.guild_id)
+            saved_rows = {}
+            if self.roster_profiles:
+                for index, profile_id in enumerate(self.assignments):
+                    if profile_id is None:
+                        continue
+                    profile = roster_by_id[profile_id]
+                    saved_rows[index] = {
+                        **self.records[index],
+                        "player_name": profile["ign"],
+                        "roster_profile_id": profile_id,
+                        "guild_id": self.guild_id,
+                    }
+            else:
+                saved_rows = {
+                    index: record
+                    for index, record in enumerate(eligible_records)
+                }
+            db.save_stats_match(
+                self.guild_id,
+                self.img_hash,
+                self.records,
+                self.assignments,
+                saved_rows,
+                getattr(getattr(self, "_bot_msg", None), "id", None),
+            )
             self._saved = True
-            self.records = eligible_records
             log.info(
                 f"Stats: saved {len(eligible_records)} players, "
                 f"skipped {skipped_count} rows | "
@@ -1763,7 +1892,8 @@ class StatsConfirmView(discord.ui.View):
             return
 
         content_parts = [
-            f"Saved {len(eligible_records)} player(s); skipped {skipped_count} row(s)."
+            f"Saved {len(eligible_records)} player(s); skipped {skipped_count} row(s).",
+            f"Match ID: `{self.img_hash[:8]}`.",
         ]
         if self.overflow_count:
             content_parts.append(
@@ -1771,8 +1901,12 @@ class StatsConfirmView(discord.ui.View):
             )
         content = " ".join(content_parts)
         embed = (
-            _build_stats_embed(self.records, saved=True)
-            if self.records
+            _build_stats_embed(
+                eligible_records,
+                saved=True,
+                match_ref=self.img_hash,
+            )
+            if eligible_records
             else None
         )
         if interaction:
@@ -1792,16 +1926,113 @@ class StatsConfirmView(discord.ui.View):
                 log.warning(f"Could not update saved stats review card: {exc}")
 
     async def save_btn(self, interaction: discord.Interaction):
+        if not await self._authorize_fix_interaction(interaction):
+            return
         await self._do_save(interaction)
 
     async def edit_btn(self, interaction: discord.Interaction):
+        if not await self._authorize_fix_interaction(interaction):
+            return
         modal = StatsEditModal(self.records, self)
         await interaction.response.send_modal(modal)
 
     async def on_timeout(self):
         """Auto-save if nobody clicks within 2 minutes."""
+        if self.is_fix:
+            log.info(f"Stats fix review timed out without saving | hash={self.img_hash[:12]}")
+            try:
+                await self._bot_msg.edit(
+                    content="Match fix expired without saving.",
+                    view=None,
+                )
+            except discord.HTTPException as exc:
+                log.warning(f"Could not update expired match fix card: {exc}")
+            return
         log.info(f"Stats confirm timed out — auto-saving | hash={self.img_hash[:12]}")
         await self._do_save(interaction=None)
+
+
+@bot.command(name="fixmatch")
+@commands.has_permissions(administrator=True)
+@commands.guild_only()
+async def cmd_fix_match(
+    ctx: commands.Context,
+    reference: str = "",
+) -> None:
+    """Reopen one saved match for roster assignment corrections."""
+    reply_message_id = (
+        ctx.message.reference.message_id
+        if ctx.message.reference
+        else None
+    )
+    match_reference = reference.strip().strip("`#").casefold()
+    if not match_reference and reply_message_id is None:
+        await ctx.send(
+            "Reply to a saved stats confirmation or provide its Match ID. "
+            "Use `!fixmatch <id>`."
+        )
+        return
+    if match_reference and len(match_reference) < 4:
+        await ctx.send("Match IDs must contain at least 4 characters.")
+        return
+
+    matches = db.find_stats_matches(
+        ctx.guild.id,
+        reference=match_reference or None,
+        message_id=reply_message_id if not match_reference else None,
+    )
+    if not matches:
+        await ctx.send("I couldn't find saved stats for that match in this server.")
+        return
+    if len(matches) > 1:
+        await ctx.send("That Match ID is ambiguous. Use more characters from the ID.")
+        return
+
+    match = matches[0]
+    try:
+        roster_profiles = db.get_approved_roster_profiles(ctx.guild.id)
+    except Exception as exc:
+        log.error(
+            f"Stats fix: could not load approved roster | "
+            f"guild={ctx.guild.id} | error={exc}"
+        )
+        await ctx.send("❌ Could not load the approved roster. Please try again.")
+        return
+    if not roster_profiles:
+        await ctx.send("There are no approved roster players to assign.")
+        return
+
+    rows = match["rows"]
+    records = [row["record"] for row in rows]
+    assignments = [row["roster_profile_id"] for row in rows]
+    first_record = records[0]
+    placement = first_record.get("placement", 0)
+    total = first_record.get("total_teams", 0)
+    place_str = f"#{placement}/{total}" if placement else "?"
+    view = StatsConfirmView(
+        records=records,
+        img_hash=match["image_hash"],
+        guild_id=ctx.guild.id,
+        message=ctx.message,
+        place_str=place_str,
+        map_name=first_record.get("map_name", ""),
+        roster_profiles=roster_profiles,
+        is_fix=True,
+        reviewer_id=ctx.author.id,
+        initial_assignments=assignments,
+    )
+    embed = _build_stats_embed(records, match_ref=match["image_hash"])
+    review_message = await ctx.send(
+        content=f"Fixing saved match `{match['image_hash'][:8]}`. Review assignments and save.",
+        embed=embed,
+        view=view,
+    )
+    view._bot_msg = review_message
+    db.register_stats_match_message(
+        ctx.guild.id,
+        match["image_hash"],
+        review_message.id,
+    )
 
 
 async def _handle_stats_screenshot(
@@ -1940,7 +2171,11 @@ async def _handle_stats_screenshot(
         roster_profiles=roster_profiles,
         overflow_count=overflow_count,
     )
-    embed = _build_stats_embed(records, overflow_count=overflow_count)
+    embed = _build_stats_embed(
+        records,
+        overflow_count=overflow_count,
+        match_ref=img_hash,
+    )
 
     await _safe_remove_reaction("🔍")
     try:
