@@ -6,6 +6,7 @@ Existing endpoints UNCHANGED. Stats endpoints added at bottom.
 import os
 from datetime import datetime
 from pathlib import Path
+from statistics import mean
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -167,6 +168,150 @@ async def get_stats_summary(guild_id: int, roster_only: bool = True):
         "top_player":      rows_7[0]["player_name"] if rows_7 else None,
         "top_kills_7d":    rows_7[0]["total_kills"]  if rows_7 else 0,
         "last_match_at":   recent[0]["detected_at"]  if recent else None,
+    }
+
+
+@app.get("/matches/explore")
+async def explore_matches(
+    guild_id: int,
+    days: str = "7",
+    limit: int = 10,
+    sort_by: str = "placement",
+    order: str = "best",
+    map_name: str | None = None,
+    roster_only: bool = True,
+):
+    if not 1 <= guild_id <= 9_223_372_036_854_775_807:
+        raise HTTPException(400, "guild_id must be a positive 64-bit integer")
+    if days.casefold() == "all":
+        day_count = None
+    else:
+        try:
+            day_count = int(days)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "days must be 1-365 or 'all'")
+        if not 1 <= day_count <= 365:
+            raise HTTPException(400, "days must be 1-365 or 'all'")
+    if not 1 <= limit <= 50:
+        raise HTTPException(400, "limit must be 1-50")
+    sort_by = sort_by.casefold()
+    if sort_by not in {"placement", "kills", "damage", "rating", "survival"}:
+        raise HTTPException(400, "sort_by must be placement, kills, damage, rating, or survival")
+    order = order.casefold()
+    if order not in {"best", "worst"}:
+        raise HTTPException(400, "order must be 'best' or 'worst'")
+    if map_name is not None:
+        map_name = map_name.strip()
+        if not map_name or len(map_name) > 100:
+            raise HTTPException(400, "map_name must contain 1-100 characters")
+
+    rows = db.get_match_explorer_rows(
+        guild_id,
+        days=day_count,
+        map_name=map_name,
+        roster_only=roster_only,
+    )
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        image_hash = str(row.get("image_hash") or "").strip()
+        match_key = image_hash or f"stat:{row['id']}"
+        match = grouped.get(match_key)
+        if match is None:
+            match = {
+                "match_id": match_key,
+                "map": row.get("map_name") or "Unknown",
+                "date": row.get("detected_at"),
+                "placement": row.get("placement"),
+                "total_teams": row.get("total_teams"),
+                "players": [],
+                "_seen_players": set(),
+                "_ratings": [],
+                "_survival": [],
+                "_mvp": None,
+            }
+            grouped[match_key] = match
+
+        player_key = row.get("roster_profile_id") or str(
+            row.get("player_name") or "Unknown"
+        ).casefold()
+        if player_key in match["_seen_players"]:
+            if row.get("is_mvp"):
+                match["_mvp"] = row.get("player_name") or "Unknown"
+            continue
+        match["_seen_players"].add(player_key)
+        kills = int(row.get("kills") or 0)
+        damage = int(row.get("damage") or 0)
+        rating = row.get("rating")
+        survived = row.get("survived")
+        match["players"].append(
+            {
+                "ign": row.get("player_name") or "Unknown",
+                "uid": row.get("roster_uid"),
+                "kills": kills,
+                "damage": damage,
+                "rating": rating,
+                "survived": survived,
+                "is_mvp": bool(row.get("is_mvp")),
+            }
+        )
+        if rating is not None:
+            match["_ratings"].append(float(rating))
+        if survived is not None:
+            match["_survival"].append(float(survived))
+        if row.get("is_mvp"):
+            match["_mvp"] = row.get("player_name") or "Unknown"
+
+    matches = list(grouped.values())
+    for match in matches:
+        match["kills"] = sum(player["kills"] for player in match["players"])
+        match["damage"] = sum(player["damage"] for player in match["players"])
+        match["avg_rating"] = mean(match["_ratings"]) if match["_ratings"] else None
+        match["avg_survival"] = mean(match["_survival"]) if match["_survival"] else None
+        match["mvp"] = match.pop("_mvp")
+        match.pop("_seen_players")
+        match.pop("_ratings")
+        match.pop("_survival")
+
+    def metric(match):
+        if sort_by == "placement":
+            return match.get("placement")
+        if sort_by == "kills":
+            return match["kills"]
+        if sort_by == "damage":
+            return match["damage"]
+        if sort_by == "rating":
+            return match["avg_rating"]
+        return match["avg_survival"]
+
+    def match_sort_key(match):
+        value = metric(match)
+        missing = value is None
+        value = float(value or 0)
+        if sort_by == "placement":
+            primary = value if order == "best" else -value
+            kills_tie = -match["kills"] if order == "best" else match["kills"]
+            damage_tie = -match["damage"] if order == "best" else match["damage"]
+            return (missing, primary, kills_tie, damage_tie)
+        primary = -value if order == "best" else value
+        return (missing, primary, -match["kills"], -match["damage"])
+
+    matches.sort(key=match_sort_key)
+    matches = matches[:limit]
+    placements = [
+        float(match["placement"])
+        for match in matches
+        if match.get("placement") is not None
+    ]
+    return {
+        "matches": matches,
+        "summary": {
+            "count": len(matches),
+            "avg_placement": mean(placements) if placements else None,
+            "total_kills": sum(match["kills"] for match in matches),
+            "chicken_dinners": sum(
+                1 for match in matches if match.get("placement") == 1
+            ),
+        },
     }
 
 

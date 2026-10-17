@@ -15,6 +15,9 @@ export const getSlots       = (guildId) => api.get(`/slots/${guildId}`)
 export const clearSlots     = (guildId) => api.post(`/slots/${guildId}/clear`)
 export const getChannels    = (guildId) => api.get(`/channels/${guildId}`)
 export const getRoster      = (guildId) => api.get('/roster', { params: { guild_id: guildId } })
+export const getMatchExplorer = (guildId, params = {}) => api.get('/matches/explore', {
+  params: { guild_id: guildId, ...params },
+})
 export const getLogs        = (lines = 150) => api.get(`/logs?lines=${lines}`)
 
 // Stats endpoints

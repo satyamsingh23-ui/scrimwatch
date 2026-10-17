@@ -10,6 +10,7 @@ const NAV = [
   { to: '/stats',    label: 'Player Stats', icon: '📊' },
   { to: '/teams',    label: 'Teams',       icon: '⚔️'  },
   { to: '/roster',   label: 'Roster',      icon: '♙'  },
+  { to: '/explore',  label: 'Match Explorer', icon: '⌕' },
   { to: '/settings', label: 'Settings',    icon: '⚙'  },
 ]
 

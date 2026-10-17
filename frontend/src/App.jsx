@@ -16,6 +16,7 @@ import SettingsPage  from './pages/SettingsPage.jsx'
 import StatsPage            from './pages/StatsPage.jsx'
 import TeamPerformancePage  from './pages/TeamPerformancePage.jsx'
 import RosterPage           from './pages/RosterPage.jsx'
+import ExplorerPage         from './pages/ExplorerPage.jsx'
 
 import { usePolling } from './hooks/usePolling.js'
 import { useToast }   from './hooks/useToast.js'
@@ -100,6 +101,7 @@ function Layout() {
             <Route path="/stats"    element={<P><StatsPage /></P>} />
             <Route path="/teams"    element={<P><TeamPerformancePage /></P>} />
             <Route path="/roster"   element={<P><RosterPage /></P>} />
+            <Route path="/explore"  element={<P><ExplorerPage /></P>} />
           </Routes>
         </main>
       </div>

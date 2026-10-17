@@ -1478,6 +1478,68 @@ class Database:
             records.append(record)
         return records
 
+    def get_match_explorer_rows(
+        self,
+        guild_id: int,
+        *,
+        days: int | None = 7,
+        map_name: str | None = None,
+        roster_only: bool = True,
+    ) -> list[dict]:
+        """Return individual match-stat rows for the match explorer."""
+        since = (
+            (datetime.utcnow() - timedelta(days=days)).isoformat()
+            if days is not None
+            else None
+        )
+        rows = self._db.execute(
+            """
+            WITH resolved AS (
+                SELECT stats.*,
+                       COALESCE(
+                           stats.roster_profile_id,
+                           (
+                               SELECT roster.id
+                               FROM roster_profiles AS roster
+                               WHERE roster.guild_id=stats.guild_id
+                                 AND roster.approved_uid IS NOT NULL
+                                 AND normalize_ign(roster.approved_ign)=normalize_ign(stats.player_name)
+                               ORDER BY roster.id
+                               LIMIT 1
+                           )
+                       ) AS resolved_roster_profile_id
+                FROM player_stats AS stats
+                WHERE stats.guild_id=?
+            )
+            SELECT resolved.id, resolved.image_hash, resolved.detected_at,
+                   resolved.map_name, resolved.placement, resolved.total_teams,
+                   resolved.kills, resolved.damage, resolved.rating,
+                   resolved.survived, resolved.is_mvp,
+                   resolved_roster_profile_id AS roster_profile_id,
+                   roster.approved_uid AS roster_uid,
+                   COALESCE(roster.approved_ign, resolved.player_name) AS player_name
+            FROM resolved
+            LEFT JOIN roster_profiles AS roster
+              ON roster.id=resolved.resolved_roster_profile_id
+             AND roster.guild_id=resolved.guild_id
+             AND roster.approved_uid IS NOT NULL
+            WHERE (?=0 OR roster.id IS NOT NULL)
+              AND (? IS NULL OR lower(trim(coalesce(resolved.map_name, ''))) =
+                                lower(trim(?)))
+              AND (? IS NULL OR datetime(resolved.detected_at) >= datetime(?))
+            ORDER BY resolved.detected_at DESC, resolved.id
+            """,
+            (
+                guild_id,
+                int(roster_only),
+                map_name,
+                map_name,
+                since,
+                since,
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
 
 # ── Singleton ─────────────────────────────────────────────────────────────
 db = Database()
