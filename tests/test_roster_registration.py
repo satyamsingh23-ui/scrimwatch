@@ -11,6 +11,7 @@ import discord
 from api import dashboard
 from bot import discord_bot
 from bot.discord_bot import (
+    DuplicateStatsView,
     RemoveRosterPlayerView,
     RosterApprovalView,
     RosterEditModal,
@@ -61,6 +62,7 @@ class _Followup:
 
 class _ReviewMessage:
     def __init__(self):
+        self.id = 7654321
         self.edited = None
 
     async def edit(self, **kwargs):
@@ -637,6 +639,218 @@ class RosterRegistrationTest(unittest.IsolatedAsyncioTestCase):
                 row["roster_profile_id"] for row in match["rows"]
             ],
         )
+
+    def _create_approved_profiles(self, count=4):
+        profiles = []
+        for index in range(count):
+            profile = self._create_profile(
+                user_id=1200 + index,
+                ign=f"MatchPlayer{index + 1}",
+                uid=f"40404040{index + 1}",
+            )
+            self.database.review_roster_profile(
+                self.guild_id,
+                profile["discord_user_id"],
+                "approved",
+            )
+            profiles.append(profile)
+        return self.database.get_approved_roster_profiles(self.guild_id)
+
+    def _create_legacy_match(self, profiles, *, image_hash="legacy-duplicate-hash", count=3):
+        saved_records = [
+            {
+                "guild_id": self.guild_id,
+                "player_name": profiles[index]["ign"],
+                "kills": index + 2,
+                "assists": 1,
+                "damage": 300 + index,
+                "placement": 1,
+                "map_name": "Erangel",
+                "image_hash": image_hash,
+                "roster_profile_id": profiles[index]["id"],
+            }
+            for index in range(count)
+        ]
+        self.database.save_player_stats(saved_records)
+        self.database.mark_stats_processed(image_hash, self.guild_id)
+        return saved_records
+
+    def _reprocessed_records(self, count=4):
+        return [
+            {
+                "player_name": f"MatchPlayer{index + 1}",
+                "kills": index + 5,
+                "assists": 2,
+                "damage": 500 + index,
+                "placement": 1,
+                "map_name": "Erangel",
+                "screenshot_type": "detail_stats",
+                "image_hash": "legacy-duplicate-hash",
+            }
+            for index in range(count)
+        ]
+
+    async def _reprocess_duplicate(self, profiles, image_hash, parsed_records, *, legacy):
+        match = self.database.get_stats_match(self.guild_id, image_hash)
+        view = DuplicateStatsView(
+            message=_ReviewMessage(),
+            attachment_bytes=b"same screenshot",
+            image_hash=image_hash,
+            guild_id=self.guild_id,
+            match=match,
+        )
+        interaction = self._create_edit_interaction(999, is_admin=True)
+        interaction.message = _ReviewMessage()
+        with (
+            patch.object(discord_bot, "db", self.database),
+            patch.object(
+                discord_bot,
+                "parse_screenshot",
+                new=AsyncMock(return_value=parsed_records),
+            ),
+        ):
+            await view.reprocess(interaction)
+        review = interaction.response.edited["view"]
+        self.assertTrue(review.is_reprocess)
+        self.assertEqual(review.legacy_match, legacy)
+        save_interaction = self._create_edit_interaction(999, is_admin=True)
+        with patch.object(discord_bot, "db", self.database):
+            await review._do_save(save_interaction)
+        return review, save_interaction
+
+    async def test_duplicate_legacy_match_reprocess_adds_missing_player_once(self):
+        profiles = self._create_approved_profiles()
+        self._create_legacy_match(profiles)
+        before = self.database.get_recent_stats(self.guild_id, limit=10)
+        self.assertEqual(len(before), 3)
+
+        review, interaction = await self._reprocess_duplicate(
+            profiles,
+            "legacy-duplicate-hash",
+            self._reprocessed_records(),
+            legacy=True,
+        )
+
+        self.assertEqual(
+            review.assignments,
+            [profile["id"] for profile in profiles],
+        )
+        saved = self.database.get_recent_stats(self.guild_id, limit=10)
+        self.assertEqual(len(saved), 4)
+        self.assertEqual(
+            {record["roster_profile_id"] for record in saved},
+            {profile["id"] for profile in profiles},
+        )
+        self.assertEqual(
+            len({record["roster_profile_id"] for record in saved}),
+            4,
+        )
+        ledger_match = self.database.get_stats_match(
+            self.guild_id,
+            "legacy-duplicate-hash",
+        )
+        self.assertFalse(ledger_match["legacy"])
+        self.assertEqual(len(ledger_match["rows"]), 4)
+        self.assertIn("Added 1 player(s)", interaction.response.edited["content"])
+        self.assertTrue(review._saved)
+
+    async def test_duplicate_keep_previous_changes_nothing(self):
+        profiles = self._create_approved_profiles()
+        self._create_legacy_match(profiles)
+        before = self.database.get_recent_stats(self.guild_id, limit=10)
+        view = DuplicateStatsView(
+            message=_ReviewMessage(),
+            attachment_bytes=b"same screenshot",
+            image_hash="legacy-duplicate-hash",
+            guild_id=self.guild_id,
+            match=self.database.get_stats_match(
+                self.guild_id,
+                "legacy-duplicate-hash",
+            ),
+        )
+        interaction = self._create_edit_interaction(999, is_admin=True)
+
+        await view.keep_previous(interaction)
+
+        self.assertEqual(
+            self.database.get_recent_stats(self.guild_id, limit=10),
+            before,
+        )
+        self.assertEqual(
+            interaction.response.edited["content"],
+            "Kept the previously saved match.",
+        )
+        self.assertEqual(
+            self.database.get_stats_match(
+                self.guild_id,
+                "legacy-duplicate-hash",
+            )["legacy"],
+            True,
+        )
+
+    async def test_duplicate_repair_buttons_are_admin_only(self):
+        profiles = self._create_approved_profiles()
+        self._create_legacy_match(profiles)
+        view = DuplicateStatsView(
+            message=_ReviewMessage(),
+            attachment_bytes=b"same screenshot",
+            image_hash="legacy-duplicate-hash",
+            guild_id=self.guild_id,
+            match=self.database.get_stats_match(
+                self.guild_id,
+                "legacy-duplicate-hash",
+            ),
+        )
+        interaction = self._create_edit_interaction(999, is_admin=False)
+        before = self.database.get_recent_stats(self.guild_id, limit=10)
+
+        await view.keep_previous(interaction)
+
+        self.assertTrue(interaction.response.sent[1]["ephemeral"])
+        self.assertEqual(
+            self.database.get_recent_stats(self.guild_id, limit=10),
+            before,
+        )
+        self.assertEqual(view.timeout, 60)
+
+    async def test_duplicate_reprocess_of_ledgered_match_updates_existing_rows(self):
+        profiles = self._create_approved_profiles()
+        image_hash = "ledgered-duplicate-hash"
+        records = [
+            {
+                **record,
+                "image_hash": image_hash,
+                "roster_profile_id": profiles[index]["id"],
+            }
+            for index, record in enumerate(self._reprocessed_records(3))
+        ]
+        self.database.save_stats_match(
+            self.guild_id,
+            image_hash,
+            records,
+            [profile["id"] for profile in profiles[:3]],
+            {
+                index: {
+                    **record,
+                    "guild_id": self.guild_id,
+                    "roster_profile_id": profiles[index]["id"],
+                }
+                for index, record in enumerate(records)
+            },
+        )
+
+        _, interaction = await self._reprocess_duplicate(
+            profiles,
+            image_hash,
+            self._reprocessed_records(3),
+            legacy=False,
+        )
+
+        saved = self.database.get_recent_stats(self.guild_id, limit=10)
+        match_records = [row for row in saved if row["image_hash"] == image_hash]
+        self.assertEqual(len(match_records), 3)
+        self.assertIn("Added 0 player(s)", interaction.response.edited["content"])
+        self.assertIn("updated 3", interaction.response.edited["content"])
 
     async def test_fix_match_adds_previously_unknown_row(self):
         profiles = self._approved_stats_profiles()

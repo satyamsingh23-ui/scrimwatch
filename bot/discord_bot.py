@@ -1394,6 +1394,78 @@ def _roster_match_score(name: str, roster_name: str) -> float:
     ).ratio()
 
 
+def _match_saved_rows_to_review(
+    records: list[dict],
+    saved_rows: list[dict],
+    roster_profiles: list[dict],
+) -> tuple[list[int | None], list[int | None], set[int]]:
+    """Carry saved roster assignments onto matching rows from a reprocessed image."""
+    profiles_by_id = {
+        int(profile["id"]): profile
+        for profile in roster_profiles
+    }
+    candidates = []
+    for review_index, record in enumerate(records):
+        for saved_index, saved_row in enumerate(saved_rows):
+            saved_record = saved_row["record"]
+            profile_id = saved_row.get("roster_profile_id")
+            profile = profiles_by_id.get(int(profile_id)) if profile_id else None
+            if profile is None:
+                profile_candidates = [
+                    (
+                        _roster_match_score(
+                            saved_record.get("player_name", ""),
+                            candidate.get("ign", ""),
+                        ),
+                        candidate,
+                    )
+                    for candidate in roster_profiles
+                ]
+                best_profile_score, best_profile = max(
+                    profile_candidates,
+                    key=lambda item: item[0],
+                    default=(0.0, None),
+                )
+                if best_profile_score >= 0.85:
+                    profile = best_profile
+                    profile_id = int(profile["id"])
+            saved_names = [saved_record.get("player_name", "")]
+            if profile:
+                saved_names.append(profile.get("ign", ""))
+            score = max(
+                (
+                    _roster_match_score(record.get("player_name", ""), saved_name)
+                    for saved_name in saved_names
+                ),
+                default=0,
+            )
+            if (
+                score >= 0.85
+                and profile_id is not None
+                and saved_row.get("player_stat_id") is not None
+            ):
+                candidates.append(
+                    (score, review_index, saved_index, int(profile_id))
+                )
+
+    assignments: list[int | None] = [None] * len(records)
+    stat_ids: list[int | None] = [None] * len(records)
+    locked_rows = set()
+    used_saved_rows = set()
+    used_profiles = set()
+    for _, review_index, saved_index, profile_id in sorted(candidates, reverse=True):
+        if review_index in locked_rows or saved_index in used_saved_rows:
+            continue
+        if profile_id is None or int(profile_id) in used_profiles:
+            continue
+        assignments[review_index] = int(profile_id)
+        stat_ids[review_index] = int(saved_rows[saved_index]["player_stat_id"])
+        locked_rows.add(review_index)
+        used_saved_rows.add(saved_index)
+        used_profiles.add(int(profile_id))
+    return assignments, stat_ids, locked_rows
+
+
 class StatsRosterSelect(discord.ui.Select):
     def __init__(
         self,
@@ -1491,6 +1563,151 @@ class StatsEditModal(discord.ui.Modal, title="✏️ Edit Player Names & Kills")
         await interaction.response.edit_message(embed=embed, view=self._parent_view)
 
 
+class DuplicateStatsView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        message: discord.Message,
+        attachment_bytes: bytes,
+        image_hash: str,
+        guild_id: int,
+        match: dict,
+    ):
+        super().__init__(timeout=60)
+        self.source_message = message
+        self.attachment_bytes = attachment_bytes
+        self.image_hash = image_hash
+        self.guild_id = guild_id
+        self.match = match
+        self.keep_button = discord.ui.Button(
+            label="Keep previous",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        self.keep_button.callback = self.keep_previous
+        self.add_item(self.keep_button)
+        self.reprocess_button = discord.ui.Button(
+            label="Re-process this screenshot",
+            style=discord.ButtonStyle.primary,
+            row=0,
+        )
+        self.reprocess_button.callback = self.reprocess
+        self.add_item(self.reprocess_button)
+        self._prompt_message = None
+
+    async def on_timeout(self) -> None:
+        if self._prompt_message is None:
+            return
+        try:
+            await self._prompt_message.edit(view=None)
+        except discord.HTTPException as exc:
+            log.warning(f"Could not expire duplicate stats controls: {exc}")
+
+    async def _require_admin(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        await interaction.response.send_message(
+            "Only server administrators can repair saved match stats.",
+            ephemeral=True,
+        )
+        return False
+
+    async def keep_previous(self, interaction: discord.Interaction) -> None:
+        if not await self._require_admin(interaction):
+            return
+        self.stop()
+        await interaction.response.edit_message(
+            content="Kept the previously saved match.",
+            embed=None,
+            view=None,
+        )
+
+    async def reprocess(self, interaction: discord.Interaction) -> None:
+        if not await self._require_admin(interaction):
+            return
+        try:
+            records = await parse_screenshot(
+                self.attachment_bytes,
+                self.image_hash,
+                self.guild_id,
+                "",
+            )
+        except Exception as exc:
+            log.error(
+                f"Stats duplicate re-process failed | guild={self.guild_id} | "
+                f"hash={self.image_hash[:12]} | error={exc}"
+            )
+            await interaction.response.send_message(
+                "❌ Could not re-process this screenshot. Check the bot logs.",
+                ephemeral=True,
+            )
+            return
+        if not records or records[0].get("screenshot_type") == "victory_lobby":
+            await interaction.response.send_message(
+                "❌ No match player rows could be extracted from this screenshot.",
+                ephemeral=True,
+            )
+            return
+
+        overflow_count = max(0, len(records) - 4)
+        records = records[:4]
+        try:
+            roster_profiles = db.get_approved_roster_profiles(self.guild_id)
+        except Exception as exc:
+            log.error(
+                f"Stats duplicate re-process could not load roster | "
+                f"guild={self.guild_id} | error={exc}"
+            )
+            await interaction.response.send_message(
+                "❌ Could not load the approved roster. Check the bot logs.",
+                ephemeral=True,
+            )
+            return
+        if not roster_profiles:
+            await interaction.response.send_message(
+                "There are no approved roster players to assign.",
+                ephemeral=True,
+            )
+            return
+
+        assignments, existing_stat_ids, locked_rows = _match_saved_rows_to_review(
+            records,
+            self.match["rows"],
+            roster_profiles,
+        )
+        first_record = records[0]
+        placement = first_record.get("placement", 0)
+        total = first_record.get("total_teams", 0)
+        view = StatsConfirmView(
+            records=records,
+            img_hash=self.image_hash,
+            guild_id=self.guild_id,
+            message=self.source_message,
+            place_str=f"#{placement}/{total}" if placement else "?",
+            map_name=first_record.get("map_name", ""),
+            roster_profiles=roster_profiles,
+            overflow_count=overflow_count,
+            is_reprocess=True,
+            reviewer_id=interaction.user.id,
+            initial_assignments=assignments,
+            existing_stat_ids=existing_stat_ids,
+            locked_assignments=locked_rows,
+            legacy_match=self.match["legacy"],
+        )
+        embed = _build_stats_embed(
+            records,
+            overflow_count=overflow_count,
+            match_ref=self.image_hash,
+        )
+        self.stop()
+        await interaction.response.edit_message(
+            content="Review the re-processed rows and save the corrected assignments.",
+            embed=embed,
+            view=view,
+        )
+        view._bot_msg = interaction.message
+
+
 class StatsConfirmView(discord.ui.View):
     """
     Buttons shown under the stats preview embed.
@@ -1510,8 +1727,12 @@ class StatsConfirmView(discord.ui.View):
         roster_profiles: list[dict] | None = None,
         overflow_count: int = 0,
         is_fix: bool = False,
+        is_reprocess: bool = False,
         reviewer_id: int | None = None,
         initial_assignments: list[int | None] | None = None,
+        existing_stat_ids: list[int | None] | None = None,
+        locked_assignments: set[int] | None = None,
+        legacy_match: bool = False,
     ):
         super().__init__(timeout=120)
         self.records = records[:4]
@@ -1523,7 +1744,9 @@ class StatsConfirmView(discord.ui.View):
         self.overflow_count = overflow_count
         self._saved = False
         self.is_fix = is_fix
+        self.is_reprocess = is_reprocess
         self.reviewer_id = reviewer_id
+        self.legacy_match = legacy_match
         self.roster_profiles = (
             roster_profiles
             if roster_profiles is not None
@@ -1536,9 +1759,18 @@ class StatsConfirmView(discord.ui.View):
         )
         if len(self.assignments) != len(self.records):
             raise ValueError("Initial roster assignments must match the review rows.")
+        self.existing_stat_ids = (
+            list(existing_stat_ids)
+            if existing_stat_ids is not None
+            else [None] * len(self.records)
+        )
+        if len(self.existing_stat_ids) != len(self.records):
+            raise ValueError("Existing stat rows must match the review rows.")
         self._roster_options = self._build_roster_options()
-        self.manual_assignments: set[int] = set()
+        self.manual_assignments: set[int] = set(locked_assignments or set())
         if initial_assignments is None:
+            self._preselect_roster_players()
+        elif self.is_reprocess:
             self._preselect_roster_players()
         self._build_components()
 
@@ -1546,7 +1778,7 @@ class StatsConfirmView(discord.ui.View):
         self,
         interaction: discord.Interaction,
     ) -> bool:
-        if not self.is_fix:
+        if not self.is_fix and not self.is_reprocess:
             return True
         if (
             interaction.user.id != self.reviewer_id
@@ -1701,7 +1933,7 @@ class StatsConfirmView(discord.ui.View):
             emoji="✏️",
             row=4,
         )
-        if not self.is_fix:
+        if not self.is_fix and not self.is_reprocess:
             edit_button.callback = self.edit_btn
             self.add_item(edit_button)
 
@@ -1761,6 +1993,64 @@ class StatsConfirmView(discord.ui.View):
         self.stop()
 
         try:
+            if self.is_reprocess:
+                result = db.save_reprocessed_stats_match(
+                    self.guild_id,
+                    self.img_hash,
+                    self.records,
+                    self.assignments,
+                    self.existing_stat_ids,
+                    self.roster_profiles,
+                    legacy=self.legacy_match,
+                    confirmation_message_id=getattr(
+                        getattr(self, "_bot_msg", None),
+                        "id",
+                        None,
+                    ),
+                )
+                self._saved = True
+                content = (
+                    f"Added {result['added']} player(s), updated "
+                    f"{result['updated']}, removed {result['removed']}."
+                )
+                saved_records = []
+                for index, profile_id in enumerate(self.assignments):
+                    if profile_id is None:
+                        continue
+                    profile = next(
+                        profile for profile in self.roster_profiles
+                        if int(profile["id"]) == profile_id
+                    )
+                    saved_records.append(
+                        {
+                            **self.records[index],
+                            "player_name": profile["ign"],
+                            "roster_profile_id": profile_id,
+                        }
+                    )
+                embed = (
+                    _build_stats_embed(
+                        saved_records,
+                        saved=True,
+                        match_ref=self.img_hash,
+                    )
+                    if saved_records
+                    else None
+                )
+                if interaction:
+                    await interaction.response.edit_message(
+                        content=content,
+                        embed=embed,
+                        view=None,
+                    )
+                else:
+                    await self._bot_msg.edit(
+                        content=content,
+                        embed=embed,
+                        view=None,
+                    )
+                return
+
             if self.is_fix:
                 result = db.update_stats_match_assignments(
                     self.guild_id,
@@ -1938,11 +2228,11 @@ class StatsConfirmView(discord.ui.View):
 
     async def on_timeout(self):
         """Auto-save if nobody clicks within 2 minutes."""
-        if self.is_fix:
+        if self.is_fix or self.is_reprocess:
             log.info(f"Stats fix review timed out without saving | hash={self.img_hash[:12]}")
             try:
                 await self._bot_msg.edit(
-                    content="Match fix expired without saving.",
+                    content="Match review expired without saving.",
                     view=None,
                 )
             except discord.HTTPException as exc:
@@ -2078,11 +2368,68 @@ async def _handle_stats_screenshot(
     log.info(f"Stats hash={img_hash[:12]} | file={attachment.filename}")
 
     if db.is_stats_duplicate(img_hash, guild_id):
-
         log.info(
-            f"Stats skipped as duplicate | guild={guild_id} | "
+            f"Stats duplicate detected | guild={guild_id} | "
             f"hash={img_hash[:12]} | file={attachment.filename}"
         )
+        try:
+            saved_match = db.get_stats_match(guild_id, img_hash)
+        except Exception as exc:
+            log.error(
+                f"Stats duplicate lookup failed | guild={guild_id} | "
+                f"hash={img_hash[:12]} | error={exc}"
+            )
+            saved_match = None
+
+        if saved_match is None:
+            log.warning(
+                f"Stats duplicate hash has no saved match rows; keeping silent skip | "
+                f"guild={guild_id} | hash={img_hash[:12]}"
+            )
+        else:
+            saved_rows = [
+                row for row in saved_match["rows"]
+                if row.get("player_stat_id") is not None
+            ]
+            embed = discord.Embed(
+                title="♻️ This match screenshot was already processed",
+                description=(
+                    "Previously saved players are listed below. An administrator "
+                    "can keep them as-is or re-process this upload."
+                ),
+                color=discord.Color.orange(),
+            )
+            if saved_rows:
+                for row in saved_rows:
+                    record = row["record"]
+                    embed.add_field(
+                        name=record.get("player_name") or "Unknown player",
+                        value=(
+                            f"🔫 `{record.get('kills') or 0}` kills  "
+                            f"🤝 `{record.get('assists') or '—'}` assists  "
+                            f"💥 `{record.get('damage') or '—'}` dmg"
+                        ),
+                        inline=False,
+                    )
+            else:
+                embed.description += "\nNo player stats are currently saved for this match."
+            embed.set_footer(
+                text=f"{saved_match['rows'][0]['record'].get('map_name', '')} • "
+                f"Match ID: {img_hash[:8]}"
+            )
+            view = DuplicateStatsView(
+                message=message,
+                attachment_bytes=raw_bytes,
+                image_hash=img_hash,
+                guild_id=guild_id,
+                match=saved_match,
+            )
+            prompt = await message.channel.send(
+                content="Duplicate screenshot detected. Choose an action:",
+                embed=embed,
+                view=view,
+            )
+            view._prompt_message = prompt
         try:
             await message.add_reaction("♻️")
         except discord.HTTPException:

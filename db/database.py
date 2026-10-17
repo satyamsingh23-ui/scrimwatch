@@ -10,8 +10,8 @@ Uses aiosqlite for fully async, non-blocking DB access.
 All public functions are coroutines safe to call from the event loop.
 """
 
-import sqlite3
 import json
+import sqlite3
 import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -927,6 +927,328 @@ class Database:
                 }
             )
         return matches
+
+    def get_stats_match(self, guild_id: int, image_hash: str) -> dict | None:
+        """Load one match from its ledger, or reconstruct it from legacy stats."""
+        ledger_match = self.find_stats_matches(
+            guild_id,
+            reference=image_hash,
+        )
+        if ledger_match:
+            exact_match = next(
+                (
+                    match for match in ledger_match
+                    if match["image_hash"] == image_hash
+                ),
+                None,
+            )
+            if exact_match is not None:
+                for row in exact_match["rows"]:
+                    if row["player_stat_id"] is None:
+                        continue
+                    saved_record = self._db.execute(
+                        """
+                        SELECT *
+                        FROM player_stats
+                        WHERE id=? AND guild_id=? AND image_hash=?
+                        """,
+                        (
+                            row["player_stat_id"],
+                            guild_id,
+                            image_hash,
+                        ),
+                    ).fetchone()
+                    if saved_record is not None:
+                        row["record"] = dict(saved_record)
+                exact_match["legacy"] = False
+                return exact_match
+
+        rows = self._db.execute(
+            """
+            SELECT *
+            FROM player_stats
+            WHERE guild_id=? AND image_hash=?
+            ORDER BY id
+            """,
+            (guild_id, image_hash),
+        ).fetchall()
+        if not rows:
+            return None
+        return {
+            "guild_id": guild_id,
+            "image_hash": image_hash,
+            "legacy": True,
+            "rows": [
+                {
+                    "row_index": index,
+                    "record": dict(row),
+                    "roster_profile_id": row["roster_profile_id"],
+                    "player_stat_id": row["id"],
+                }
+                for index, row in enumerate(rows)
+            ],
+        }
+
+    def save_reprocessed_stats_match(
+        self,
+        guild_id: int,
+        image_hash: str,
+        records: list[dict],
+        assignments: list[int | None],
+        existing_stat_ids: list[int | None],
+        roster_profiles: list[dict],
+        *,
+        legacy: bool,
+        confirmation_message_id: int | None = None,
+    ) -> dict[str, int]:
+        """Merge reprocessed screenshot rows without duplicating roster players."""
+        if len(records) != len(assignments) or len(records) != len(existing_stat_ids):
+            raise ValueError("Match review rows and assignments must have equal lengths.")
+
+        profiles_by_id = {
+            int(profile["id"]): profile
+            for profile in roster_profiles
+        }
+        added = updated = removed = 0
+        with self._db:
+            current_rows = self._db.execute(
+                """
+                SELECT row_index, record_json, roster_profile_id, player_stat_id
+                FROM stats_match_rows
+                WHERE guild_id=? AND image_hash=?
+                ORDER BY row_index
+                """,
+                (guild_id, image_hash),
+            ).fetchall()
+            if not current_rows and legacy:
+                legacy_rows = self._db.execute(
+                    """
+                    SELECT *
+                    FROM player_stats
+                    WHERE guild_id=? AND image_hash=?
+                    ORDER BY id
+                    """,
+                    (guild_id, image_hash),
+                ).fetchall()
+                current_rows = [
+                    {
+                        "row_index": index,
+                        "record_json": json.dumps(dict(row)),
+                        "roster_profile_id": row["roster_profile_id"],
+                        "player_stat_id": row["id"],
+                    }
+                    for index, row in enumerate(legacy_rows)
+                ]
+
+            existing_by_id = {
+                int(row["player_stat_id"]): row
+                for row in current_rows
+                if row["player_stat_id"] is not None
+            }
+            existing_profile_ids = {}
+            for row in current_rows:
+                profile_id = row["roster_profile_id"]
+                record = json.loads(row["record_json"])
+                if profile_id is None:
+                    normalized_saved_name = _normalize_ign(
+                        record.get("player_name")
+                    )
+                    profile_id = next(
+                        (
+                            profile["id"]
+                            for profile in roster_profiles
+                            if _normalize_ign(profile.get("ign"))
+                            == normalized_saved_name
+                        ),
+                        None,
+                    )
+                if profile_id is not None and row["player_stat_id"] is not None:
+                    existing_profile_ids.setdefault(
+                        int(profile_id),
+                        int(row["player_stat_id"]),
+                    )
+            used_stat_ids: set[int] = set()
+            ledger_entries: list[tuple[int, str, int | None, int | None]] = []
+
+            for index, (record, profile_id, existing_id) in enumerate(
+                zip(records, assignments, existing_stat_ids)
+            ):
+                stat_id = (
+                    int(existing_id)
+                    if existing_id is not None
+                    and int(existing_id) in existing_by_id
+                    and int(existing_id) not in used_stat_ids
+                    else None
+                )
+                existing = (
+                    existing_by_id.get(stat_id)
+                    if stat_id is not None
+                    else None
+                )
+                if profile_id is None:
+                    if existing is not None:
+                        self._db.execute(
+                            """
+                            DELETE FROM player_stats
+                            WHERE id=? AND guild_id=? AND image_hash=?
+                            """,
+                            (stat_id, guild_id, image_hash),
+                        )
+                        removed += 1
+                    ledger_entries.append(
+                        (
+                            index,
+                            json.dumps(record),
+                            None,
+                            None,
+                        )
+                    )
+                    continue
+
+                profile = profiles_by_id.get(int(profile_id))
+                if profile is None:
+                    raise ValueError("The selected roster player is no longer approved.")
+                if stat_id is None:
+                    stat_id = existing_profile_ids.get(int(profile_id))
+                    if stat_id in used_stat_ids:
+                        stat_id = None
+                    existing = (
+                        existing_by_id.get(stat_id)
+                        if stat_id is not None
+                        else None
+                    )
+
+                saved_record = {
+                    **record,
+                    "guild_id": guild_id,
+                    "player_name": profile["ign"],
+                    "roster_profile_id": int(profile_id),
+                    "image_hash": image_hash,
+                }
+                if stat_id is None:
+                    stat_id = self._insert_player_stat(saved_record)
+                    added += 1
+                else:
+                    self._db.execute(
+                        """
+                        UPDATE player_stats
+                        SET player_name=?, kills=?, assists=?, damage=?,
+                            survived=?, health_restored=?, rescue=?, recall=?,
+                            placement=?, total_teams=?, map_name=?, game_mode=?,
+                            is_mvp=?, rating=?, roster_profile_id=?, confidence=?,
+                            screenshot_type=?, detected_at=?
+                        WHERE id=? AND guild_id=? AND image_hash=?
+                        """,
+                        (
+                            profile["ign"],
+                            saved_record.get("kills") or 0,
+                            saved_record.get("assists") or 0,
+                            saved_record.get("damage") or 0,
+                            saved_record.get("survived"),
+                            saved_record.get("health_restored"),
+                            saved_record.get("rescue"),
+                            saved_record.get("recall"),
+                            saved_record.get("placement", 0),
+                            saved_record.get("total_teams", 0),
+                            saved_record.get("map_name", ""),
+                            saved_record.get("game_mode", ""),
+                            int(saved_record.get("is_mvp", False)),
+                            saved_record.get("rating"),
+                            int(profile_id),
+                            saved_record.get("confidence", 0.0),
+                            saved_record.get("screenshot_type", ""),
+                            saved_record.get("detected_at", datetime.utcnow().isoformat()),
+                            stat_id,
+                            guild_id,
+                            image_hash,
+                        ),
+                    )
+                    updated += 1
+                used_stat_ids.add(int(stat_id))
+                ledger_entries.append(
+                    (
+                        index,
+                        json.dumps(record),
+                        int(profile_id),
+                        int(stat_id),
+                    )
+                )
+
+            for row in current_rows:
+                stat_id = row["player_stat_id"]
+                if stat_id is None:
+                    record_json = row["record_json"]
+                    previous_record = json.loads(record_json)
+                    previous_name = _normalize_ign(
+                        previous_record.get("player_name")
+                    )
+                    included_again = any(
+                        _normalize_ign(record.get("player_name")) == previous_name
+                        for record in records
+                    )
+                    if not included_again:
+                        ledger_entries.append(
+                            (
+                                len(records) + len(ledger_entries),
+                                record_json,
+                                row["roster_profile_id"],
+                                None,
+                            )
+                        )
+                    continue
+                if int(stat_id) in used_stat_ids:
+                    continue
+                record_json = row["record_json"]
+                profile_id = row["roster_profile_id"]
+                kept_id = int(stat_id)
+                if self._db.execute(
+                    "SELECT 1 FROM player_stats WHERE id=? AND guild_id=? AND image_hash=?",
+                    (kept_id, guild_id, image_hash),
+                ).fetchone():
+                    ledger_entries.append(
+                        (
+                            len(records) + len(ledger_entries),
+                            record_json,
+                            profile_id,
+                            kept_id,
+                        )
+                    )
+
+            self._db.execute(
+                "DELETE FROM stats_match_rows WHERE guild_id=? AND image_hash=?",
+                (guild_id, image_hash),
+            )
+            for row_index, record_json, profile_id, stat_id in ledger_entries:
+                self._db.execute(
+                    """
+                    INSERT INTO stats_match_rows (
+                        guild_id, image_hash, row_index, record_json,
+                        roster_profile_id, player_stat_id
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        guild_id,
+                        image_hash,
+                        row_index,
+                        record_json,
+                        profile_id,
+                        stat_id,
+                    ),
+                )
+            self._db.execute(
+                "INSERT OR IGNORE INTO stats_image_hashes (hash, guild_id) VALUES (?, ?)",
+                (image_hash, guild_id),
+            )
+            if confirmation_message_id is not None:
+                self._db.execute(
+                    """
+                    INSERT OR IGNORE INTO stats_match_messages
+                        (guild_id, image_hash, message_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    (guild_id, image_hash, confirmation_message_id),
+                )
+        return {"added": added, "updated": updated, "removed": removed}
 
     def update_stats_match_assignments(
         self,
